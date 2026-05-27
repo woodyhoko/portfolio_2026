@@ -154,61 +154,14 @@
             background-position: center;
         }
 
-        /* Ambient Glowing Background Blobs — kept subtle so they don't
-           wash the page in a haze. The cosmos starfield carries the glow. */
-        .bg-glow-1 {
-            position: fixed;
-            top: -10%;
-            left: -10%;
-            width: 45vw;
-            height: 45vw;
-            background: radial-gradient(circle, rgba(0, 240, 255, 0.05) 0%, transparent 70%);
-            z-index: -4;
-            pointer-events: none;
-            animation: floatBlob1 22s infinite alternate ease-in-out;
-            filter: blur(40px);
-        }
-
-        .bg-glow-2 {
-            position: fixed;
-            bottom: -15%;
-            right: -10%;
-            width: 55vw;
-            height: 55vw;
-            background: radial-gradient(circle, rgba(255, 0, 127, 0.04) 0%, transparent 70%);
-            z-index: -4;
-            pointer-events: none;
-            animation: floatBlob2 28s infinite alternate ease-in-out;
-            filter: blur(40px);
-        }
-
-        .bg-glow-3 {
-            position: fixed;
-            top: 40%;
-            left: 30%;
-            width: 40vw;
-            height: 40vw;
-            background: radial-gradient(circle, rgba(139, 92, 246, 0.035) 0%, transparent 65%);
-            z-index: -4;
-            pointer-events: none;
-            animation: floatBlob3 32s infinite alternate ease-in-out;
-            filter: blur(45px);
-        }
-
-        @keyframes floatBlob1 {
-            0% { transform: translate(0, 0) scale(1); }
-            100% { transform: translate(12vw, 8vh) scale(1.15); }
-        }
-
-        @keyframes floatBlob2 {
-            0% { transform: translate(0, 0) scale(1); }
-            100% { transform: translate(-18vw, -12vh) scale(1.1); }
-        }
-
-        @keyframes floatBlob3 {
-            0% { transform: translate(0, 0) scale(1.1); }
-            100% { transform: translate(-8vw, -6vh) scale(0.9); }
-        }
+        /* Ambient glow blobs were removed: three full-screen
+           radial-gradient divs with filter: blur(40-45px) and infinite
+           CSS animations were forcing the compositor to recomposite
+           large blurred regions every frame the cosmos updated, which
+           is *the* dominant per-frame cost on Windows/Chrome. The
+           cosmos already carries the color/motion the blobs used to
+           add. .bg-glow-1/2/3 classes are intentionally left undefined
+           so the leftover divs in the DOM are zero-cost. */
 
         .glass {
             background: var(--bg-card);
@@ -1872,9 +1825,9 @@
 </head>
 <body>
     <!-- Ambient Shifting Background Glow Blobs -->
-    <div class="bg-glow-1"></div>
-    <div class="bg-glow-2"></div>
-    <div class="bg-glow-3"></div>
+    <!-- (Ambient glow blob divs removed — the cosmos provides the
+         color/motion they used to add, and their blur+animation was
+         the dominant per-frame compositor cost.) -->
     <!-- Background Canvas Container for particle background -->
     <div id="particles-bg"></div>
     <!-- Fullscreen Native 3D Cosmos & Particle Galaxy Background -->
@@ -5423,10 +5376,16 @@
                 this.scene.add(directionalLight);
 
                 // ─── Renderer ────────────────────────────────────────────
-                this.renderer = new T.WebGPURenderer({ antialias: true, alpha: true });
+                // alpha: false — opaque canvas. With a transparent
+                // canvas the compositor has to alpha-blend the cosmos
+                // pixels over whatever's beneath every single frame;
+                // since the cosmos covers the whole viewport, that
+                // blend is wasted work. Solid black clear color
+                // matches the page background.
+                this.renderer = new T.WebGPURenderer({ antialias: true, alpha: false });
                 this.renderer.setPixelRatio(window.devicePixelRatio);
                 this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-                this.renderer.setClearColor('#000000', 0);
+                this.renderer.setClearColor('#000000', 1);
 
                 await this.renderer.init();
 
