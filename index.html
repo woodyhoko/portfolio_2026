@@ -11,15 +11,18 @@
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Import Map for ES Modules. Three.js r172 is the first stable
-         release with the TSL `Fn`/`Loop`/`instancedArray` API used by the
-         WebGPU TSL compute attractors example. `three.webgpu.js` is the
-         full build (WebGL + WebGPU); `three.tsl.js` exposes the shader
-         language nodes. -->
+    <!-- Import Map for ES Modules.
+         In Three.js r172, `three.module.js` (the classic build) ships
+         WebGLRenderer but NOT WebGPURenderer/TSL, while `three.webgpu.js`
+         is the WebGPU-flavored build and doesn't expose WebGLRenderer.
+         The galaxy renders via WebGL and the cosmos via WebGPU, so we
+         keep them split: galaxy imports `three`, cosmos imports
+         `three/webgpu` + `three/tsl` separately. The two THREE
+         namespaces never share objects so the duplication is safe. -->
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js",
+                "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
                 "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js",
                 "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js",
                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/",
@@ -2162,19 +2165,14 @@
         // Three.js is loaded lazily via dynamic import so that a CDN failure or a
         // browser without importmap support (iOS Safari < 16.4) never prevents the
         // data / UI layer from running.
-        let THREE = null, TSL = null, OrbitControls = null, TrackballControls = null;
+        // THREE is the classic WebGL build — used by SemanticGalaxy +
+        // anything else that expects WebGLRenderer. WEBGPU is the
+        // separate WebGPU-flavored build used only by the cosmos.
+        let THREE = null, WEBGPU = null, TSL = null, OrbitControls = null, TrackballControls = null;
         async function loadThreeJS() {
             if (THREE !== null) return true;
             try {
-                THREE = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js');
-                // TSL (Three.js Shader Language) — provides Fn / Loop /
-                // instancedArray / hash etc. used by the WebGPU compute
-                // cosmos. Same module the threejs.org TSL examples use.
-                try {
-                    TSL = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js');
-                } catch (tslErr) {
-                    console.warn('TSL unavailable, cosmos will fail to start:', tslErr);
-                }
+                THREE = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js');
                 const ocMod = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js');
                 OrbitControls = ocMod.OrbitControls;
                 // TrackballControls — quaternion-based, no pole gimbal lock.
@@ -2185,6 +2183,15 @@
                     TrackballControls = tcMod.TrackballControls;
                 } catch (tcErr) {
                     console.warn('TrackballControls unavailable, falling back to OrbitControls:', tcErr);
+                }
+                // WebGPU + TSL — separate build, only the cosmos uses these.
+                // Failing here just means the cosmos doesn't start; the rest
+                // of the page (galaxy, search, chatbot) is unaffected.
+                try {
+                    WEBGPU = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js');
+                    TSL = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js');
+                } catch (wgpuErr) {
+                    console.warn('WebGPU / TSL build unavailable, cosmos disabled:', wgpuErr);
                 }
                 return true;
             } catch (e) {
@@ -5349,8 +5356,15 @@
             }
 
             async _buildWebGPUCosmos() {
+                if (!WEBGPU) throw new Error('WebGPU build of three.js not loaded');
                 if (!TSL) throw new Error('TSL module not loaded');
-                if (!THREE.WebGPURenderer) throw new Error('WebGPURenderer not in THREE build');
+                if (!WEBGPU.WebGPURenderer) throw new Error('WebGPURenderer not in WebGPU build');
+
+                // T = the WebGPU-flavored THREE namespace. Classes from
+                // this build aren't compatible with the WebGL THREE used
+                // by the galaxy, but they never need to be — the cosmos
+                // owns its own scene and doesn't share objects.
+                const T = WEBGPU;
 
                 const {
                     Fn, If, PI, color, cos, float, instanceIndex, Loop, mix,
@@ -5359,7 +5373,7 @@
                 } = TSL;
 
                 // ─── Camera + scene ──────────────────────────────────────
-                this.camera = new THREE.PerspectiveCamera(
+                this.camera = new T.PerspectiveCamera(
                     25,
                     this.container.clientWidth / this.container.clientHeight,
                     0.1,
@@ -5368,16 +5382,16 @@
                 this.camera.position.set(3, 5, 8);
                 this.camera.lookAt(0, 0, 0);
 
-                this.scene = new THREE.Scene();
+                this.scene = new T.Scene();
 
                 // ambient + directional light (verbatim from the example)
-                this.scene.add(new THREE.AmbientLight('#ffffff', 0.5));
-                const directionalLight = new THREE.DirectionalLight('#ffffff', 1.5);
+                this.scene.add(new T.AmbientLight('#ffffff', 0.5));
+                const directionalLight = new T.DirectionalLight('#ffffff', 1.5);
                 directionalLight.position.set(4, 2, 0);
                 this.scene.add(directionalLight);
 
                 // ─── Renderer ────────────────────────────────────────────
-                this.renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
+                this.renderer = new T.WebGPURenderer({ antialias: true, alpha: true });
                 this.renderer.setPixelRatio(window.devicePixelRatio);
                 this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
                 this.renderer.setClearColor('#000000', 0);
@@ -5391,42 +5405,42 @@
 
                 // ─── Attractors (3 fixed positions) ──────────────────────
                 const attractorsPositions = uniformArray([
-                    new THREE.Vector3(-1, 0, 0),
-                    new THREE.Vector3(1, 0, -0.5),
-                    new THREE.Vector3(0, 0.5, 1)
+                    new T.Vector3(-1, 0, 0),
+                    new T.Vector3(1, 0, -0.5),
+                    new T.Vector3(0, 0.5, 1)
                 ]);
                 const attractorsRotationAxes = uniformArray([
-                    new THREE.Vector3(0, 1, 0),
-                    new THREE.Vector3(0, 1, 0),
-                    new THREE.Vector3(1, 0, -0.5).normalize()
+                    new T.Vector3(0, 1, 0),
+                    new T.Vector3(0, 1, 0),
+                    new T.Vector3(1, 0, -0.5).normalize()
                 ]);
                 const attractorsLength = uniform(attractorsPositions.array.length, 'uint');
 
                 // Visual ring + arrow helpers for each attractor — same as
                 // the example but without TransformControls so the user
                 // can't drag them around (this is a background, not a toy).
-                const ringGeom = new THREE.RingGeometry(1, 1.02, 32, 1, 0, Math.PI * 1.5);
-                const arrowGeom = new THREE.ConeGeometry(0.1, 0.4, 12, 1, false);
-                const helperMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+                const ringGeom = new T.RingGeometry(1, 1.02, 32, 1, 0, Math.PI * 1.5);
+                const arrowGeom = new T.ConeGeometry(0.1, 0.4, 12, 1, false);
+                const helperMat = new T.MeshBasicMaterial({ side: T.DoubleSide });
 
                 for (let i = 0; i < attractorsPositions.array.length; i++) {
-                    const reference = new THREE.Object3D();
+                    const reference = new T.Object3D();
                     reference.position.copy(attractorsPositions.array[i]);
                     reference.quaternion.setFromUnitVectors(
-                        new THREE.Vector3(0, 1, 0),
+                        new T.Vector3(0, 1, 0),
                         attractorsRotationAxes.array[i]
                     );
                     this.scene.add(reference);
 
-                    const helper = new THREE.Group();
+                    const helper = new T.Group();
                     helper.scale.setScalar(0.325);
                     reference.add(helper);
 
-                    const ring = new THREE.Mesh(ringGeom, helperMat);
+                    const ring = new T.Mesh(ringGeom, helperMat);
                     ring.rotation.x = -Math.PI * 0.5;
                     helper.add(ring);
 
-                    const arrow = new THREE.Mesh(arrowGeom, helperMat);
+                    const arrow = new T.Mesh(arrowGeom, helperMat);
                     arrow.position.x = 1;
                     arrow.position.z = 0.2;
                     arrow.rotation.x = Math.PI * 0.5;
@@ -5436,8 +5450,8 @@
                 // ─── Particles ────────────────────────────────────────────
                 const count = Math.pow(2, 18); // 262 144 — same as the example
 
-                const material = new THREE.SpriteNodeMaterial({
-                    blending: THREE.AdditiveBlending,
+                const material = new T.SpriteNodeMaterial({
+                    blending: T.AdditiveBlending,
                     depthWrite: false
                 });
 
@@ -5534,7 +5548,10 @@
                     const halfHalfExtent = boundHalfExtent.div(2).toVar();
                     position.assign(mod(position.add(halfHalfExtent), boundHalfExtent).sub(halfHalfExtent));
                 });
-                this.updateCompute = updateFn().compute(count).setName('Update Particles');
+                // `.setName(...)` exists on compute nodes only in newer
+                // Three.js (post-r172) — used by the Inspector GUI. We
+                // skip it; the cosmos still computes correctly.
+                this.updateCompute = updateFn().compute(count);
 
                 // ─── Sprite render ───────────────────────────────────────
                 material.positionNode = positionBuffer.toAttribute();
@@ -5547,8 +5564,8 @@
                 })();
                 material.scaleNode = particleMassMultiplier.mul(scaleU);
 
-                const geometry = new THREE.PlaneGeometry(1, 1);
-                const mesh = new THREE.InstancedMesh(geometry, material, count);
+                const geometry = new T.PlaneGeometry(1, 1);
+                const mesh = new T.InstancedMesh(geometry, material, count);
                 this.scene.add(mesh);
 
                 // Reveal canvas; the CSS already has the opacity transition.
