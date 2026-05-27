@@ -30,9 +30,23 @@
             }
         }
     </script>
-    <!-- Non-Module Libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <!-- Modulepreload hints. Tells the browser to begin fetching the
+         Three.js builds during HTML parse instead of waiting until the
+         inline `await import(...)` calls actually run. The dynamic
+         imports inside loadThreeJS() then resolve from the warm cache
+         in a single tick, so the cosmos can start ~300 ms sooner on
+         a cold load. -->
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js" crossorigin>
+    <!-- Non-Module Libraries. `defer` lets HTML parsing continue while
+         these download — they're only used by the chatbot's response
+         renderer (DOMPurify.sanitize(marked.parse(...))), so they don't
+         need to be available until the user actually sends a message.
+         Defer still guarantees execution before DOMContentLoaded. -->
+    <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
     <!-- KaTeX for $...$ / $$...$$ math in chat responses -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -2156,9 +2170,16 @@
         </div>
     </div>
 
-    <!-- External portfolio data scripts (CORS-safe for file:// local double-click) -->
-    <script src="./projects.js"></script>
-    <script src="./experiences.js"></script>
+    <!-- External portfolio data scripts (CORS-safe for file:// local
+         double-click). These are ~512 KB each (mostly the 27 × 768-dim
+         Gemma embeddings) — `defer` lets them download in parallel with
+         the rest of the page instead of blocking HTML parsing while the
+         browser fetches and parses ~1 MB of inline data. Defer
+         guarantees execution order and that they run before
+         DOMContentLoaded, so `window.projectsData` / `window.experienceData`
+         are populated by the time loadData() reads them. -->
+    <script defer src="./projects.js"></script>
+    <script defer src="./experiences.js"></script>
 
     <!-- Combined Scripts Module -->
     <script type="module">
@@ -2171,28 +2192,28 @@
         let THREE = null, WEBGPU = null, TSL = null, OrbitControls = null, TrackballControls = null;
         async function loadThreeJS() {
             if (THREE !== null) return true;
+            // Fire all module fetches in parallel. The previous serial
+            // chain of awaits paid one network round-trip per module;
+            // Promise.all lets the browser pipeline them, so cold-cache
+            // load time is roughly bounded by the slowest single file
+            // instead of summed.
+            const settle = (url) => import(url).then(m => m, err => { console.warn('Module load failed:', url, err); return null; });
             try {
-                THREE = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js');
-                const ocMod = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js');
-                OrbitControls = ocMod.OrbitControls;
-                // TrackballControls — quaternion-based, no pole gimbal lock.
-                // Loaded lazily; the galaxy falls back to OrbitControls if it
-                // somehow fails to fetch.
-                try {
-                    const tcMod = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TrackballControls.js');
-                    TrackballControls = tcMod.TrackballControls;
-                } catch (tcErr) {
-                    console.warn('TrackballControls unavailable, falling back to OrbitControls:', tcErr);
-                }
-                // WebGPU + TSL — separate build, only the cosmos uses these.
-                // Failing here just means the cosmos doesn't start; the rest
-                // of the page (galaxy, search, chatbot) is unaffected.
-                try {
-                    WEBGPU = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js');
-                    TSL = await import('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js');
-                } catch (wgpuErr) {
-                    console.warn('WebGPU / TSL build unavailable, cosmos disabled:', wgpuErr);
-                }
+                const [
+                    threeMod, ocMod, tcMod, wgpuMod, tslMod
+                ] = await Promise.all([
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TrackballControls.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js'),
+                ]);
+                if (!threeMod) throw new Error('three.module.js failed to load');
+                THREE = threeMod;
+                OrbitControls = ocMod?.OrbitControls || null;
+                TrackballControls = tcMod?.TrackballControls || null;
+                WEBGPU = wgpuMod || null;
+                TSL = tslMod || null;
                 return true;
             } catch (e) {
                 console.warn('Three.js failed to load — 3D features disabled:', e);
@@ -2934,8 +2955,19 @@
                 this._currentSearchId = 0;
 
                 if (!this.grid) return;
-                
-                this.render([...projectsData, ...experienceData]);
+
+                // Render the 27-card grid in an idle frame so the
+                // synchronous boot path doesn't pay for the DOM build.
+                // requestIdleCallback runs after first paint, so the
+                // hero/cosmos can come up before the projects section
+                // populates — that section is below the fold on first
+                // load anyway.
+                const renderNow = () => this.render([...projectsData, ...experienceData]);
+                if (typeof requestIdleCallback === "function") {
+                    requestIdleCallback(renderNow, { timeout: 500 });
+                } else {
+                    setTimeout(renderNow, 0);
+                }
 
                 this.searchInput.addEventListener("input", () => {
                     this.filterProjects();
