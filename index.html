@@ -3710,58 +3710,11 @@
                 };
                 this._projectVectorTo3D = projectVectorTo3D;
 
-                // Helper to project a Gemma embedding (768D) to 3D space.
-                // Embedding gets mean-centered + re-normalized to match the centroid
-                // space, then category weights are computed via softmax for crisp
-                // assignment to the dominant cluster.
-                const SOFTMAX_TEMP = 0.04; // smaller = sharper one-hot; tune 0.02–0.08
-                const projectEmbeddingTo3D = (embeddingVec, optCategoryBias = null) => {
-                    const centered = centerAndNormalize(embeddingVec);
-
-                    const similarities = {};
-                    let maxSim = -Infinity;
-                    Object.keys(clusters).forEach(cat => {
-                        const s = dotProduct(centered, categoryGemmaCentroids[cat]);
-                        similarities[cat] = s;
-                        if (s > maxSim) maxSim = s;
-                    });
-
-                    // Category bias for documents that already know their category —
-                    // applied AFTER similarity so it doesn't drown the signal for
-                    // queries (which pass optCategoryBias = null).
-                    if (optCategoryBias && clusters[optCategoryBias]) {
-                        similarities[optCategoryBias] += 0.04;
-                        if (similarities[optCategoryBias] > maxSim) maxSim = similarities[optCategoryBias];
-                    }
-
-                    // Softmax with low temperature → small lead = big weight.
-                    const weights = {};
-                    let totalWeight = 0;
-                    Object.keys(clusters).forEach(cat => {
-                        const w = Math.exp((similarities[cat] - maxSim) / SOFTMAX_TEMP);
-                        weights[cat] = w;
-                        totalWeight += w;
-                    });
-
-                    let px = 0, py = 0, pz = 0;
-                    if (totalWeight > 0) {
-                        Object.keys(clusters).forEach(cat => {
-                            const wNormalized = weights[cat] / totalWeight;
-                            const anchor = clusters[cat];
-                            px += anchor.x * wNormalized;
-                            py += anchor.y * wNormalized;
-                            pz += anchor.z * wNormalized;
-                        });
-                    } else {
-                        const anchor = optCategoryBias ? clusters[optCategoryBias] : { x: 0, y: 0, z: 0 };
-                        px = anchor.x;
-                        py = anchor.y;
-                        pz = anchor.z;
-                    }
-
-                    return { x: px, y: py, z: pz, similarities };
-                };
-                this._projectEmbeddingTo3D = projectEmbeddingTo3D;
+                // (The old centroid-voting projection used to live here as a
+                // fallback. It's been removed: every project in projects.js
+                // ships with a precomputed Gemma embedding, the PCA path
+                // below always succeeds, and the centroid-voting positions
+                // were strictly worse than PCA whenever both were available.)
 
                 // For LIVE QUERIES, the centroid approach above is unreliable because
                 // Gemma's asymmetric prefix space ("task: search result | query: …" vs
@@ -3912,17 +3865,16 @@
                     console.log(`[Galaxy] PCA: top eigenvalues = ${e1.lambda.toFixed(2)}, ${e2.lambda.toFixed(2)}, ${e3.lambda.toFixed(2)} — scale=${scale.toFixed(2)}`);
                 }
 
-                // Place every doc by its PCA position (with light jitter to break
-                // perfect ties), falling back to the centroid projection only if
-                // a doc lacks an embedding.
+                // Place every doc by its PCA-on-embedding position. PCA is
+                // built whenever we have ≥3 docs with embeddings, which is
+                // always the case here (every project ships with one). The
+                // TF-IDF fallback below only fires for the degenerate case
+                // where a doc has no embedding at all.
                 docs.forEach(doc => {
                     let px, py, pz, similarities;
                     const pcaEntry = pcaState?.byDoc.get(doc);
                     if (pcaEntry) {
                         px = pcaEntry.x; py = pcaEntry.y; pz = pcaEntry.z;
-                    } else if (doc.ref?.embedding) {
-                        const c = projectEmbeddingTo3D(doc.ref.embedding, doc.isProject ? doc.ref.category : null);
-                        px = c.x; py = c.y; pz = c.z; similarities = c.similarities;
                     } else {
                         const c = projectVectorTo3D(doc, doc.isProject ? doc.ref.category : null);
                         px = c.x; py = c.y; pz = c.z; similarities = c.similarities;
@@ -6201,6 +6153,14 @@
                         g.gpuCompute.getCurrentRenderTarget(g.posVar).texture;
                     g.renderMat.uniforms.textureVelocity.value =
                         g.gpuCompute.getCurrentRenderTarget(g.velVar).texture;
+
+                    // First compute finished — unblock downstream loaders
+                    // (galaxy + Gemma embedder) that were waiting on cosmos.
+                    if (window._resolveCosmosReady) {
+                        const r = window._resolveCosmosReady;
+                        window._resolveCosmosReady = null;
+                        r();
+                    }
                 } else if (this._simState) {
                     // CPU fallback (legacy path). Per-particle JS loop with
                     // semi-implicit Euler integration. Slow but correct.
@@ -6274,6 +6234,14 @@
                     }
                     s.posAttr.needsUpdate = true;
                     s.speedAttr.needsUpdate = true;
+
+                    // CPU-fallback parity: same ready signal as the GPGPU path
+                    // so downstream loaders can fire either way.
+                    if (window._resolveCosmosReady) {
+                        const r = window._resolveCosmosReady;
+                        window._resolveCosmosReady = null;
+                        r();
+                    }
                 }
 
                 // (Click ripple lives inside the same particle pool now —
@@ -7128,11 +7096,19 @@
                 if (devBadge) devBadge.style.display = "inline-flex";
             }
 
+            // Global cosmos-settled signal. Resolved by the cosmos animate
+            // loop after its first compute frame, or by any of the failure
+            // paths below so downstream loaders never deadlock.
+            window.cosmosReady = new Promise(resolve => { window._resolveCosmosReady = resolve; });
+            const resolveCosmos = () => {
+                if (window._resolveCosmosReady) {
+                    const r = window._resolveCosmosReady;
+                    window._resolveCosmosReady = null;
+                    r();
+                }
+            };
+
             // Initialize 3D Cosmos Background — load Three.js first, fall back gracefully.
-            // The CosmosBackgroundController constructor allocates ~16k–32k
-            // particles synchronously, which blocks the first paint. We defer
-            // it to the next animation frame so the hero text/logo can paint
-            // immediately, then the cosmos snaps in a frame later.
             let cosmosLoaded = false;
             try {
                 const threeOk = await loadThreeJS();
@@ -7143,6 +7119,7 @@
                         } catch (err) {
                             console.error("Cosmos init failed:", err);
                             if (!window.particlesActive) initParticlesFallback();
+                            resolveCosmos();   // unblock galaxy/Gemma on failure
                         }
                     });
                     cosmosLoaded = true;
@@ -7154,6 +7131,7 @@
             // Initialize Background Particles Fallback only if 3D Cosmos failed
             if (!cosmosLoaded) {
                 initParticlesFallback();
+                resolveCosmos();
             }
 
             // Scroll moving logo & matrix typing text
@@ -7165,28 +7143,63 @@
             await loadData();
             renderExperienceTimeline();
             initSemanticSearch();
-            initGemmaEmbedder();
 
             // Grid
             window.projectsGridController = new ProjectsGridController();
             setupViewToggler();
-            
-            // 3D Semantic Galaxy Initialization
-            let galaxyInstance = null;
+
+            // ─── Deferred heavy loads ──────────────────────────────────────
+            // Gemma embedder (~150 MB ONNX) and the 3D Semantic Galaxy (a
+            // second Three.js renderer with its own shader compile + node
+            // build pass) used to fire at DOMContentLoaded, fighting the
+            // cosmos for network bandwidth, GPU init time and shader-compile
+            // cycles. We now gate both behind `window.splatController.ready`,
+            // which the cosmos resolves after its first frame is on screen.
+            // After that, we sequence them with rIC so they don't overlap
+            // with each other either: galaxy first (uses precomputed
+            // embeddings already in projects.js, no network), then the
+            // Gemma model download for live search queries.
             const btnGalaxy = document.getElementById("btn-galaxy-view");
-            if (btnGalaxy && btnGalaxy.classList.contains("active")) {
+            let galaxyInstance = null;
+
+            const buildGalaxyNow = () => {
+                if (galaxyInstance || !THREE) return;
                 window.galaxyInstance = galaxyInstance = new SemanticGalaxy();
-            }
+                if (window.projectsGridController) {
+                    window.projectsGridController.updateGalaxySearch();
+                }
+            };
+
+            // Wait for cosmos to render its first frame. Race with a 3s
+            // safety timeout — if cosmos somehow never reports ready (very
+            // slow GPU, error path we missed), we still want the rest of
+            // the page to come alive eventually.
+            const settleSafetyTimeout = new Promise(r => setTimeout(r, 3000));
+            Promise.race([window.cosmosReady, settleSafetyTimeout]).then(() => {
+                const ric = (cb, opts) => (typeof requestIdleCallback === "function"
+                    ? requestIdleCallback(cb, opts || { timeout: 500 })
+                    : setTimeout(cb, 16));
+
+                // Galaxy first — synchronous Three.js work, finite.
+                ric(() => {
+                    if (btnGalaxy && btnGalaxy.classList.contains("active")) {
+                        buildGalaxyNow();
+                    }
+                    // Then start streaming the Gemma model. Fire-and-forget;
+                    // search uses the TF-IDF fallback until this resolves.
+                    ric(() => { initGemmaEmbedder(); }, { timeout: 2000 });
+                });
+            });
+
+            // Galaxy button still works even if the user clicks before the
+            // deferred init runs — same handler as before, but using the
+            // shared builder so we don't double-construct.
             btnGalaxy.addEventListener("click", async () => {
                 if (!galaxyInstance) {
                     const threeOk = await loadThreeJS();
                     if (threeOk) {
                         setTimeout(() => {
-                            window.galaxyInstance = galaxyInstance = new SemanticGalaxy();
-                            // Re-apply any active search highlight once the galaxy is built.
-                            if (window.projectsGridController) {
-                                window.projectsGridController.updateGalaxySearch();
-                            }
+                            buildGalaxyNow();
                         }, 100);
                     }
                 } else if (window.projectsGridController) {

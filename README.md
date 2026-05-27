@@ -1,90 +1,109 @@
-# 3D Semantic Galaxy & Embeddings Representation Engine
+# Ho Ko — AI/ML Engineer Portfolio
 
-This repository features an interactive, semantically grounded **3D Constellation Galaxy** that models and visualizes the relationships between 21 projects and 6 professional experiences. 
+An interactive portfolio combining three on-device systems:
 
-Rather than using manual coordinate assignments or heavy pre-trained models, the layout is computed entirely on-device inside WebGL using a self-contained **Vector Space Model (VSM)**.
+1. **GPGPU N-body cosmos** — the always-on space background. WebGL2
+   compute-style physics (gravity to a central black hole, cursor-driven
+   gravitational well, bipolar jets, Keplerian respawn) runs entirely on
+   the GPU via float-texture ping-pong, the same idea as
+   [`webgpu_tsl_compute_attractors_particles`](https://threejs.org/examples/#webgpu_tsl_compute_attractors_particles)
+   but on WebGL2 so it works in every modern browser. CPU per-frame cost
+   is ~zero so the cosmos doesn't fight scroll/interaction.
+2. **3D Semantic Galaxy** — every project / experience node is placed by
+   running PCA on its 768-D **EmbeddingGemma** vector and projecting onto
+   a sphere. Distance on the sphere ≈ cosine distance in embedding space,
+   so semantically related work clumps naturally.
+3. **On-device chatbot** — Liquid AI LFM or Gemma running locally via
+   `@huggingface/transformers` (WebGPU) or `@mediapipe/tasks-genai` (WASM).
+   Lazy-loaded behind a button click.
 
 ---
 
-## 🚀 Key Architectural Pipeline
+## Load sequence
 
-```mermaid
-graph TD
-    A[JSON Data Fetch] --> B[Tokenization & Stopword Filter]
-    B --> C[TF-IDF Term Weighting]
-    C --> D[L2 Vector Normalization]
-    D --> E[Cosine Similarity Computation]
-    E --> F[Tetrahedral Centroid Projection]
-    F --> G[N-Body Repulsion Iterations]
-    G --> H[K-Nearest Constellation Linkage]
-    H --> I[WebGL Shader Rendering]
+Heavy work is sequenced so the first paint is never blocked:
+
+```
+DOMContentLoaded
+   ├── Three.js dynamic import
+   ├── Cosmos controller created (rIC) ──┐
+   ├── DOM / nav / grid setup            │
+   └── Wait on window.cosmosReady ───────┘  (cosmos resolves it after
+                                              its first GPU compute frame)
+        ├── Build SemanticGalaxy           (uses pre-baked embeddings,
+        │                                   no network — synchronous)
+        └── initGemmaEmbedder()            (~150 MB ONNX download for
+                                            live search queries; until
+                                            it resolves, search falls
+                                            back to TF-IDF)
 ```
 
----
-
-## 1. Document Tokenization & Preprocessing
-When the portfolio loads, all document details (titles, descriptions, challenges, results, and technologies) are processed to extract semantic keywords.
-- **Normalization:** Text is forced to lowercase and stripped of non-alphanumeric characters.
-- **Stopwords Filtration:** Common English stopwords (e.g., *the, and, for, with, about*) are removed using a local HashSet to prevent high-frequency noise from dominating vector weights.
-- **Word Extraction:** The remaining tokens form the vocabulary of the document:
-  $$\mathbf{D}_i = \{ t_1, t_2, \dots, t_k \}$$
+Why this matters: previously the embedder download + galaxy shader-compile
+fired at DOMContentLoaded alongside the cosmos, saturating the network
+and GPU during the cosmos's first frames. Gating them on
+`window.cosmosReady` (with a 3 s safety race) gives the cosmos the
+critical-path frames it needs.
 
 ---
 
-## 2. Dynamic TF-IDF Term Weighting
-Each document $d$ in the corpus is represented as a high-dimensional vector in a global vocabulary space. The weight $W_{t,d}$ of term $t$ in document $d$ is computed using **Term Frequency-Inverse Document Frequency (TF-IDF)**:
+## Galaxy positioning (EmbeddingGemma → PCA → sphere)
 
-### A. Term Frequency ($TF$)
-Measures the local frequency of term $t$ in the document $d$:
-$$TF_{t,d} = \text{Count of } t \text{ in } d$$
+Every project and experience in `projects.js` / `experiences.js` ships
+with a precomputed Gemma 768-D embedding. At galaxy build time:
 
-### B. Inverse Document Frequency ($IDF$)
-Calculates the global importance of term $t$ across the corpus of size $N$ (where $N = 27$):
-$$IDF_t = \ln\left(1 + \frac{N}{DF_t}\right)$$
-*where $DF_t$ is the Document Frequency—the number of documents containing term $t$. Terms that appear in almost all documents (e.g., "code", "software") are heavily penalized, while specific terms (e.g., "CRDT", "WebGPU", "TensorFlow") receive high weights.*
+1. **Center the embeddings** — subtract the corpus mean. Gemma's
+   embedding space is heavily anisotropic; removing the dominant common
+   direction is essential to recover useful per-doc separation.
+2. **Dual PCA (Gram-matrix formulation)** — with `N=27` docs and
+   `D=768`, the `N×N` Gram matrix `G = X Xᵀ` is small. Power iteration
+   with Gram-Schmidt deflation gives the top 3 eigenvectors; the
+   corresponding principal components in 768-D are `vₖ = Xᵀ uₖ / √λₖ`.
+   Each doc's 3-D position is `(Xᵢ·v₁, Xᵢ·v₂, Xᵢ·v₃)`.
+3. **Sphere projection + tangential repulsion** — normalize each
+   position to a radius-9 sphere, then 30 iterations of great-circle
+   repulsion keep overlapping points apart along the surface (so the
+   *angular* separation equals the meaningful quantity, which is what
+   cosine similarity actually measures).
 
-### C. L2 Vector Normalization
-To prevent longer documents (which naturally have higher term counts) from dominating similarity measurements, every TF-IDF document vector is normalized to unit length (L2 norm):
-$$\mathbf{V}_d = \frac{\mathbf{W}_d}{\|\mathbf{W}_d\|_2} = \frac{\mathbf{W}_d}{\sqrt{\sum_{t} W_{t,d}^2}}$$
-
----
-
-## 3. Cosine Similarity Space Projection
-The semantic relationship between any two items (e.g., project-to-project or project-to-experience) is defined as the cosine of the angle between their L2-normalized vectors (which simplifies to their dot product):
-$$\text{Similarity}(\mathbf{A}, \mathbf{B}) = \cos(\theta) = \frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\|_2 \|\mathbf{B}\|_2} = \sum_{t} A_t B_t$$
-
-### A. Cluster Centroids
-Four primary category anchors (vertices) are established in the 3D space:
-1. **AI/ML & LLM** (Vertex: `[x: 8.0, y: 4.0, z: 0.0]`)
-2. **Computer Vision & 3D** (Vertex: `[x: -8.0, y: 4.0, z: -4.0]`)
-3. **Systems & Cyber Security** (Vertex: `[x: -8.0, y: -4.0, z: 4.0]`)
-4. **Tools & Simulation** (Vertex: `[x: 8.0, y: -4.0, z: -4.0]`)
-
-Each category vertex is assigned a predefined centroid vector constructed from domain keywords (e.g., AI/ML uses *nlp, llm, pytorch, training, model, weights*).
-
-### B. Mathematical Placement
-For each node, we calculate the similarity $s_c$ to each category centroid $c$:
-1. **Power Scaling:** Similarities are power-scaled ($w_c = s_c^{3.0}$) to amplify strong affinities and reduce background noise.
-2. **Project Anchoring:** Projects are positioned inside their primary category sector. Their distance from the center is proportional to their category confidence, and they are offset slightly by their minor category similarities.
-3. **Dynamic Experience Positioning:** Professional experiences are positioned **100% dynamically** using center-of-mass vector interpolation. The coordinates $\mathbf{X}_{\text{node}}$ are the weighted average of the category vertices:
-   $$\mathbf{X}_{\text{node}} = \frac{\sum_c w_c \mathbf{X}_c}{\sum_c w_c}$$
-   *If an experience (like Ho's Google AI Edge role) bridges both "AI/ML" and "Systems", the math draws it directly into the space between those vertices, representing its multidisciplinary nature.*
+Live search queries: when the Gemma model has finished loading, query
+text is embedded by the same model and projected through the **same PCA
+basis**, so the query marker lands in the same semantic space as the
+nodes. Before Gemma is ready, search falls back to a TF-IDF projection
+through hardcoded category anchors.
 
 ---
 
-## 4. N-Body Repulsion Layout (Collision Prevention)
-To resolve visual overlapping in dense clusters, an N-body repulsion layout pass is executed before WebGL rendering.
-- For 20 iterations, every node checks its distance to every other node.
-- If the center-to-center distance $d$ between Node $i$ and Node $j$ is less than $2.4$ units, a repulsive force is applied symmetrically:
-  $$\mathbf{F}_{\text{rep}} = 0.25 \times (2.4 - d) \times \frac{\mathbf{X}_i - \mathbf{X}_j}{\|\mathbf{X}_i - \mathbf{X}_j\|}$$
-- Nodes slide apart until the layout settles, ensuring high readability and clean click targeting while preserving semantic clusters.
+## Cosmos physics (GPGPU)
+
+Two RGBA32F float textures (`texturePosition`, `textureVelocity`),
+ping-ponged each frame by `GPUComputationRenderer`:
+
+- **Velocity shader** — Newtonian gravity to BH, optional gravity to
+  the cursor attractor, one-shot outward burst on cursor release,
+  bipolar jet ejection when a particle crosses the event horizon, fresh
+  Keplerian tangential velocity on outer-rim escape. Reads previous
+  position + velocity, writes new velocity.
+- **Position shader** — reads previous position and new velocity,
+  integrates, mirrors the boundary conditions with deterministic GLSL
+  hashes so position and velocity always agree on respawn / ejection
+  targets.
+- **Render material** — vertex shader samples its own position out of
+  the texture via a per-particle `aRef` UV attribute; particles are
+  rendered as additive pinprick points with speed-derived color
+  (cool → warm → white as kinetic energy rises).
+
+Particle count: 256² (65 536) on desktop, 128² (16 384) on mobile.
+Browsers without WebGL2 float textures fall back to the original CPU JS
+N-body loop with progressive chunked initialization.
 
 ---
 
-## 5. Fully Connected K-Nearest Constellation
-To form the beautiful constellation web, connection lines are dynamically drawn:
-- **Guaranteed Connectivity:** To prevent isolated nodes, every node is guaranteed a connection to its absolute closest semantic peer (the document with the highest cosine similarity).
-- **Secondary Webbing:** Nodes are also connected to their 2nd and 3rd nearest semantic neighbors if their spatial distance in WebGL units is within $11.5$ units.
-- **Visual Blending:** The connection lines are drawn using a custom cylinder mesh with `THREE.AdditiveBlending` and self-illuminated emissive colors. The thickness and opacity of the line are scaled by their cosine similarity score:
-  $$\text{Radius} = 0.04 + 0.08 \times \text{Similarity}$$
-  This makes strong relationships visually thick and bright, while weaker ones appear as faint, thin threads.
+## Files
+
+- `index.html` — everything: styles, Cosmos controller, Semantic
+  Galaxy, search/embedder, on-device chatbot.
+- `projects.js`, `experiences.js` — data + precomputed Gemma embeddings.
+- `scratch/` — offline tooling used to compute the embeddings.
+
+No build step. Open `index.html` directly or serve over any static
+host.
