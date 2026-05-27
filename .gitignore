@@ -1,0 +1,4 @@
+﻿node_modules/
+scratch/
+.claude/
+package-lock.json
