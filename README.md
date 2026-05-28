@@ -2,15 +2,16 @@
 
 An interactive portfolio combining three on-device systems:
 
-1. **WebGPU TSL N-body cosmos** — the always-on space background.
-   Ported from
-   [`webgpu_tsl_compute_attractors_particles`](https://threejs.org/examples/#webgpu_tsl_compute_attractors_particles)
-   and extended with: a cursor attractor (click-and-drag pulls
-   particles), scroll-linked camera orbit (each section of the page
-   sees the cosmos from a different angle), slowly-orbiting 3 static
-   attractors for a "wandering 3-body" feel, slower particle
-   timestep, and no visible attractor helpers. 262 144 sprites,
-   physics in TSL compute shaders; CPU per-frame cost is ~zero.
+1. **N-body black-hole cosmos** — the always-on space background.
+   WebGL2 GPGPU compute (via `GPUComputationRenderer`): Newtonian
+   gravity to a central black hole, bipolar jets ejected when a
+   particle crosses the event horizon, Keplerian respawn at the outer
+   rim, and a click-and-drag cursor attractor (direct-set, no JS-side
+   lerp — the gravity field itself produces the smooth curving
+   trails). Camera position lerps between per-section keyframes
+   (hero / about / projects / chat / timeline) as you scroll, so
+   each section sees the cosmos from a different angle. CPU
+   per-frame cost is ~zero.
 2. **3D Semantic Galaxy** — every project / experience node is placed by
    running PCA on its 128-D **EmbeddingGemma** vector (Matryoshka-sliced
    from the model's 768-D output) and projecting onto a sphere. Distance
@@ -49,20 +50,31 @@ critical-path frames it needs.
 
 ---
 
-## Embedding cache (IndexedDB, lazy + scalable, Matryoshka 128-D)
+## Embedding cache (shipped JSON + IndexedDB, Matryoshka 128-D)
 
-`projects.js` and `experiences.js` ship **only the source text** — no
-precomputed embedding arrays. On every page load:
+`projects.js` and `experiences.js` ship **only the source text**. The
+embeddings live in a separate file, `embeddings_cache.json`, generated
+by the `npm run build:embeddings` script (see `scripts/build_embeddings_cache.mjs`).
+That JSON is ~34 KB for the 27 current docs and ships with the site,
+so the very first visit can position the galaxy without downloading
+the ~150 MB Gemma model at all.
 
-1. Each doc is hashed with SHA-256 over its content fields (title,
-   description, details, category, technologies, etc.). The hash is the
-   cache key.
-2. The page asks IndexedDB (`portfolio_embeddings_v2` / `embeddings`)
-   for each hash. Hits return a 128-D `Float32Array` instantly.
-3. Misses go to the live Gemma pipeline:
-   `pipe('title: <title> | text: <body>', { pooling: 'mean', normalize: true, max_length: 256, truncation: true })`
-   and the **first 128 of the 768 output dimensions** are sliced off
-   and L2-renormalized before being written to the cache.
+Lookup order at runtime:
+
+1. **IndexedDB** (`portfolio_embeddings_v2` / `embeddings`) — populated
+   on first visit from the shipped JSON, plus anything computed
+   live for new/edited docs. Sub-millisecond reads.
+2. **Shipped JSON** (`embeddings_cache.json`) — fetched once,
+   parsed once, cached in memory. Used as the fallback when
+   IndexedDB doesn't have an entry yet.
+3. **Live Gemma pipeline** — only fires for docs whose hash isn't in
+   the JSON and isn't in IndexedDB. Downloads the ~150 MB model and
+   computes the embedding, writes it to IndexedDB.
+
+When the live pipeline runs:
+`pipe('title: <title> | text: <body>', { pooling: 'mean', normalize: true, max_length: 256, truncation: true })`
+The **first 128 of the 768 output dimensions** are sliced off and
+L2-renormalized before being written to the cache.
 
 Why Matryoshka 128-D? EmbeddingGemma is trained with Matryoshka
 Representation Learning, so the leading dimensions retain almost all
@@ -77,11 +89,24 @@ the background, `scoreDocs` automatically falls back to TF-IDF cosine
 over the tokenized text. The user can search from the first keystroke
 and the ranking sharpens to embedding-based once the cache fills.
 
-Editing a doc's text changes its hash, so only that one doc gets
-recomputed on the next load. Adding a new project is a pure JS-data
-edit; the first page load after the change computes that one
-embedding (~150 ms) and caches it forever. Clearing the IndexedDB
-database forces a full re-compute of all 27 docs (~3 s on WebGPU).
+Editing a doc's text changes its hash, so only that one doc misses
+the cache. You have two options when that happens:
+
+- **Live fallback (zero-touch).** The page detects the cache miss on
+  next load, downloads Gemma once (or uses an already-warm cache),
+  and computes the missing embedding. Stored in IndexedDB for
+  subsequent loads.
+- **Regenerate the shipped JSON (recommended for shipping).** Run
+  `npm run build:embeddings` — incremental, only recomputes changed
+  docs against the existing JSON. Re-runs in a couple of seconds.
+  Commit the updated `embeddings_cache.json`. Now every visitor gets
+  the new embedding on first load with no Gemma download.
+
+The same script also handles model changes: bump `MODEL_ID` /
+`MODEL_DTYPE` / `EMBEDDING_DIMS` / `MAX_SEQUENCE_LENGTH` at the top
+of `scripts/build_embeddings_cache.mjs`, sync the same constants in
+`index.html`, then run `npm run build:embeddings` to rebuild the
+whole cache from scratch.
 
 ---
 
@@ -142,9 +167,15 @@ N-body loop with progressive chunked initialization.
 - `index.html` — everything: styles, Cosmos controller, Semantic
   Galaxy, search/embedder, on-device chatbot, IndexedDB
   EmbeddingCache.
-- `projects.js`, `experiences.js` — pure data (no embeddings — those
-  are computed at runtime and cached in IndexedDB).
-- `scratch/` — utility scripts.
+- `projects.js`, `experiences.js` — pure data (no embeddings).
+- `embeddings_cache.json` — precomputed Gemma embeddings for the
+  current set of docs. Loaded once at boot. Generated by
+  `npm run build:embeddings`.
+- `scripts/build_embeddings_cache.mjs` — Node script that
+  regenerates the JSON. Incremental: only recomputes docs whose
+  content hash changed since the last run.
+- `scratch/` — internal utility scripts.
 
-No build step. Open `index.html` directly or serve over any static
-host.
+No build step is required to run the site — just open `index.html`
+or serve over any static host. The `npm` deps are only for the
+embeddings build script.
