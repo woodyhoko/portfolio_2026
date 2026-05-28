@@ -5784,9 +5784,16 @@
                 // ── Per-frame update compute (binary BH) ─────────────────
                 // Each frame: check both event horizons → eject from the
                 // closer BH as a bipolar jet; check outer rim (distance
-                // from origin) → respawn into a fresh circumbinary
-                // Keplerian orbit; otherwise sum gravity from both BHs
-                // (and the optional cursor attractor) and integrate.
+                // from system centre) → respawn into a fresh
+                // circumbinary Keplerian orbit; otherwise sum gravity
+                // from both BHs (plus the optional cursor attractor)
+                // and integrate.
+                //
+                // TSL note: storage-element nodes (positionBuffer.element)
+                // don't reliably expose component swizzles (.x/.y/.z) in
+                // r172, so all derived vectors use vec3 arithmetic
+                // (sub / add) instead of component access.
+                const centerOffset = vec3(float(0), bhY, float(0));
                 const updateFn = Fn(() => {
                     const idx = instanceIndex;
                     const delta = float(1 / 60).mul(timeScale);
@@ -5798,33 +5805,34 @@
                     const toB = bhB.sub(position);
                     const r2B = toB.dot(toB);
 
-                    // Distance from system centre — used as the "escape"
-                    // boundary instead of either single BH so a particle
-                    // travelling past the binary doesn't immediately
-                    // respawn just because it left one BH's range.
-                    const fromCenter = vec3(position.x, position.y.sub(bhY), position.z);
+                    const fromCenter = position.sub(centerOffset);
                     const r2C = fromCenter.dot(fromCenter);
 
-                    // Helper: eject as a bipolar jet from a given source.
-                    const ejectFrom = (src) => {
-                        const parity   = hash(idx.add(uint(0xa11ce))).step(0.5);
-                        const sign     = parity.mul(2.0).sub(1.0);
-                        const jetSpeed = float(3.0).add(hash(idx.add(uint(0xb0b))).mul(1.2));
-                        const latX     = hash(idx.add(uint(0xc1c))).sub(0.5).mul(0.18);
-                        const latZ     = hash(idx.add(uint(0xd2d))).sub(0.5).mul(0.18);
-                        position.assign(vec3(
-                            src.x.add(hash(idx.add(uint(0xe3e))).sub(0.5).mul(0.04)),
-                            bhY.add(sign.mul(float(EVENT_HORIZON + 0.04))),
-                            src.z.add(hash(idx.add(uint(0xf4f))).sub(0.5).mul(0.04))
-                        ));
-                        velocity.assign(vec3(latX, sign.mul(jetSpeed), latZ));
-                    };
+                    // Per-particle jet parity + speed — shared between
+                    // both ejection branches so they look like one
+                    // continuous bipolar flow.
+                    const parity   = hash(idx.add(uint(0xa11ce))).step(0.5);
+                    const jetSign  = parity.mul(2.0).sub(1.0);
+                    const jetSpeed = float(3.0).add(hash(idx.add(uint(0xb0b))).mul(1.2));
+                    const jetOffsetY = jetSign.mul(float(EVENT_HORIZON + 0.04));
+                    const jetOffset = vec3(
+                        hash(idx.add(uint(0xe3e))).sub(0.5).mul(0.04),
+                        jetOffsetY,
+                        hash(idx.add(uint(0xf4f))).sub(0.5).mul(0.04)
+                    );
+                    const jetVel = vec3(
+                        hash(idx.add(uint(0xc1c))).sub(0.5).mul(0.18),
+                        jetSign.mul(jetSpeed),
+                        hash(idx.add(uint(0xd2d))).sub(0.5).mul(0.18)
+                    );
 
                     If(r2A.lessThan(bhEH2), () => {
-                        ejectFrom(bhA);
-                    }).Else(() => { If(r2B.lessThan(bhEH2), () => {
-                        ejectFrom(bhB);
-                    }).Else(() => { If(r2C.greaterThan(bhROUT2), () => {
+                        position.assign(bhA.add(jetOffset));
+                        velocity.assign(jetVel);
+                    }).ElseIf(r2B.lessThan(bhEH2), () => {
+                        position.assign(bhB.add(jetOffset));
+                        velocity.assign(jetVel);
+                    }).ElseIf(r2C.greaterThan(bhROUT2), () => {
                         // ── Outer-rim escape: fresh circumbinary orbit ──
                         const r  = float(9.0).add(hash(idx.add(uint(0x5050))).mul(6));
                         const th = hash(idx.add(uint(0x6060))).mul(PI).mul(2);
@@ -5865,7 +5873,7 @@
                         });
 
                         position.addAssign(velocity.mul(delta));
-                    }); }); }); });
+                    });
                 });
                 this.updateCompute = updateFn().compute(COUNT);
 
@@ -5893,8 +5901,11 @@
 
                     // Particles with mostly vertical velocity are in the
                     // bipolar jet — tint cool cyan for clean contrast
-                    // against the warm disk.
-                    const verticalFrac = v.y.abs().div(speed.add(0.001));
+                    // against the warm disk. |v.y| via dot product to
+                    // avoid attribute-swizzle issues with some TSL
+                    // versions.
+                    const verticalMag = v.dot(vec3(float(0), float(1), float(0))).abs();
+                    const verticalFrac = verticalMag.div(speed.add(0.001));
                     const jetMix = verticalFrac.smoothstep(0.55, 0.92);
                     col = mix(col, colorJet, jetMix.mul(0.85));
 
@@ -5909,47 +5920,39 @@
                 mesh.frustumCulled = false;     // particles wrap; box culling is wrong
                 this.scene.add(mesh);
 
-                // ── Opaque BH bodies ─────────────────────────────────────
-                // Pitch-black spheres at each BH location, writing depth
-                // so particles physically passing behind them get
-                // occluded. (Particles in front render normally via
-                // additive blending.) Radius is slightly less than the
-                // event horizon so absorbed particles vanish at the
-                // surface rather than appearing to clip into the body.
-                const bhBodyGeom = new T.SphereGeometry(EVENT_HORIZON * 0.92, 32, 32);
-                const bhBodyMat  = new T.MeshBasicMaterial({ color: 0x000000 });
-                this.bhMeshA = new T.Mesh(bhBodyGeom, bhBodyMat);
-                this.bhMeshB = new T.Mesh(bhBodyGeom, bhBodyMat);
-                this.bhMeshA.renderOrder = -1;
-                this.bhMeshB.renderOrder = -1;
-                this.bhMeshA.position.copy(bhA.value);
-                this.bhMeshB.position.copy(bhB.value);
-                this.scene.add(this.bhMeshA);
-                this.scene.add(this.bhMeshB);
+                // ── Opaque BH bodies + photon-ring overlays ──────────────
+                // Wrapped in a try/catch: in r172 some classic materials
+                // (MeshBasicMaterial / RingGeometry combinations) can
+                // throw when auto-converted to NodeMaterial under
+                // WebGPURenderer. We'd rather lose the visual BH bodies
+                // than the whole cosmos.
+                try {
+                    const bhBodyGeom = new T.SphereGeometry(EVENT_HORIZON * 0.92, 32, 32);
+                    const bhBodyMat  = new T.MeshBasicMaterial({ color: 0x000000 });
+                    this.bhMeshA = new T.Mesh(bhBodyGeom, bhBodyMat);
+                    this.bhMeshB = new T.Mesh(bhBodyGeom, bhBodyMat);
+                    this.bhMeshA.position.copy(bhA.value);
+                    this.bhMeshB.position.copy(bhB.value);
+                    this.scene.add(this.bhMeshA);
+                    this.scene.add(this.bhMeshB);
 
-                // Thin "photon ring" / inner accretion glow around each
-                // BH — a horizontal ring with additive blending. Sits in
-                // the disk plane (XZ) so the particles' actual motion
-                // through it reinforces the disk shape.
-                const ringGeom = new T.RingGeometry(EVENT_HORIZON * 1.05, EVENT_HORIZON * 1.35, 64);
-                const ringMatA = new T.MeshBasicMaterial({
-                    color: 0xff8a3a, side: T.DoubleSide,
-                    transparent: true, opacity: 0.55,
-                    blending: T.AdditiveBlending, depthWrite: false
-                });
-                const ringMatB = new T.MeshBasicMaterial({
-                    color: 0xff8a3a, side: T.DoubleSide,
-                    transparent: true, opacity: 0.55,
-                    blending: T.AdditiveBlending, depthWrite: false
-                });
-                this.bhRingA = new T.Mesh(ringGeom, ringMatA);
-                this.bhRingB = new T.Mesh(ringGeom, ringMatB);
-                this.bhRingA.rotation.x = -Math.PI / 2;
-                this.bhRingB.rotation.x = -Math.PI / 2;
-                this.bhRingA.position.copy(bhA.value);
-                this.bhRingB.position.copy(bhB.value);
-                this.scene.add(this.bhRingA);
-                this.scene.add(this.bhRingB);
+                    const ringGeom = new T.RingGeometry(EVENT_HORIZON * 1.05, EVENT_HORIZON * 1.4, 64);
+                    const mkRingMat = () => new T.MeshBasicMaterial({
+                        color: 0xff8a3a, side: T.DoubleSide,
+                        transparent: true, opacity: 0.55,
+                        blending: T.AdditiveBlending, depthWrite: false
+                    });
+                    this.bhRingA = new T.Mesh(ringGeom, mkRingMat());
+                    this.bhRingB = new T.Mesh(ringGeom, mkRingMat());
+                    this.bhRingA.rotation.x = -Math.PI / 2;
+                    this.bhRingB.rotation.x = -Math.PI / 2;
+                    this.bhRingA.position.copy(bhA.value);
+                    this.bhRingB.position.copy(bhB.value);
+                    this.scene.add(this.bhRingA);
+                    this.scene.add(this.bhRingB);
+                } catch (bhErr) {
+                    console.warn('[Cosmos] BH meshes failed (cosmos continues without them):', bhErr);
+                }
 
                 // (Decided to skip a separate starfield layer: a quarter-
                 // million particles in a self-gravitating swirl already
