@@ -2,17 +2,20 @@
 
 An interactive portfolio combining three on-device systems:
 
-1. **GPGPU N-body cosmos** — the always-on space background. WebGL2
-   compute-style physics (gravity to a central black hole, cursor-driven
-   gravitational well, bipolar jets, Keplerian respawn) runs entirely on
-   the GPU via float-texture ping-pong, the same idea as
+1. **WebGPU TSL N-body cosmos** — the always-on space background.
+   Ported from
    [`webgpu_tsl_compute_attractors_particles`](https://threejs.org/examples/#webgpu_tsl_compute_attractors_particles)
-   but on WebGL2 so it works in every modern browser. CPU per-frame cost
-   is ~zero so the cosmos doesn't fight scroll/interaction.
+   and extended with: a cursor attractor (click-and-drag pulls
+   particles), scroll-linked camera orbit (each section of the page
+   sees the cosmos from a different angle), slowly-orbiting 3 static
+   attractors for a "wandering 3-body" feel, slower particle
+   timestep, and no visible attractor helpers. 262 144 sprites,
+   physics in TSL compute shaders; CPU per-frame cost is ~zero.
 2. **3D Semantic Galaxy** — every project / experience node is placed by
-   running PCA on its 768-D **EmbeddingGemma** vector and projecting onto
-   a sphere. Distance on the sphere ≈ cosine distance in embedding space,
-   so semantically related work clumps naturally.
+   running PCA on its 128-D **EmbeddingGemma** vector (Matryoshka-sliced
+   from the model's 768-D output) and projecting onto a sphere. Distance
+   on the sphere ≈ cosine distance in embedding space, so semantically
+   related work clumps naturally.
 3. **On-device chatbot** — Liquid AI LFM or Gemma running locally via
    `@huggingface/transformers` (WebGPU) or `@mediapipe/tasks-genai` (WASM).
    Lazy-loaded behind a button click.
@@ -46,24 +49,39 @@ critical-path frames it needs.
 
 ---
 
-## Embedding cache (IndexedDB, lazy + scalable)
+## Embedding cache (IndexedDB, lazy + scalable, Matryoshka 128-D)
 
 `projects.js` and `experiences.js` ship **only the source text** — no
 precomputed embedding arrays. On every page load:
 
 1. Each doc is hashed with SHA-256 over its content fields (title,
-   description, category, technologies, etc.). The hash is the cache key.
-2. The page asks IndexedDB (`portfolio_embeddings_v1` / `embeddings`) for
-   each hash. Hits return a `Float32Array` instantly.
+   description, details, category, technologies, etc.). The hash is the
+   cache key.
+2. The page asks IndexedDB (`portfolio_embeddings_v2` / `embeddings`)
+   for each hash. Hits return a 128-D `Float32Array` instantly.
 3. Misses go to the live Gemma pipeline:
-   `pipe('title: <title> | text: <body>', { pooling: 'mean', normalize: true })`
-   and the resulting 768-D vector is written back to the cache.
+   `pipe('title: <title> | text: <body>', { pooling: 'mean', normalize: true, max_length: 256, truncation: true })`
+   and the **first 128 of the 768 output dimensions** are sliced off
+   and L2-renormalized before being written to the cache.
+
+Why Matryoshka 128-D? EmbeddingGemma is trained with Matryoshka
+Representation Learning, so the leading dimensions retain almost all
+the semantic signal of the full vector. 128 D gives us ~6× cheaper
+scoring (the dot products in `scoreDocs` are the hot path during
+search) and ~6× smaller cache footprint, at a small ranking accuracy
+hit. The tokenizer `max_length: 256` caps forward-pass cost for long
+docs (most fit comfortably; very long descriptions get tail-truncated).
+
+Search degrades gracefully: while embeddings are still computing in
+the background, `scoreDocs` automatically falls back to TF-IDF cosine
+over the tokenized text. The user can search from the first keystroke
+and the ranking sharpens to embedding-based once the cache fills.
 
 Editing a doc's text changes its hash, so only that one doc gets
-recomputed on the next load. Adding a new project is a pure JS-data edit;
-the first page load after the change computes that one embedding (~150 ms)
-and caches it forever. Clearing the IndexedDB database forces a full
-re-compute of all 27 docs (~5 s on WebGPU, ~30 s on WASM CPU).
+recomputed on the next load. Adding a new project is a pure JS-data
+edit; the first page load after the change computes that one
+embedding (~150 ms) and caches it forever. Clearing the IndexedDB
+database forces a full re-compute of all 27 docs (~3 s on WebGPU).
 
 ---
 

@@ -2222,8 +2222,8 @@
             if (window.gemmaPipeline) {
                 try {
                     const prefixedQuery = "task: search result | query: " + query;
-                    const tensor = await window.gemmaPipeline(prefixedQuery, { pooling: 'mean', normalize: true });
-                    queryEmbedding = Array.from(tensor.data);
+                    const tensor = await window.gemmaPipeline(prefixedQuery, applyMatryoshka({ pooling: 'mean', normalize: true }));
+                    queryEmbedding = Array.from(matryoshkaSlice(tensor));
                 } catch (err) {
                     console.error("Gemma retrieveContext error, falling back to TF-IDF:", err);
                 }
@@ -2749,9 +2749,46 @@
         //     computed the next time the page loads and cached forever
         //   - editing a project's text triggers re-embedding only for
         //     that one doc (the cache key is a SHA-256 over its content)
+        //
+        // We use EmbeddingGemma's Matryoshka property: the first 128 of
+        // its 768 output dimensions retain almost all the semantic
+        // signal of the full vector. Slicing + re-normalizing to 128 D
+        // makes scoring ~6× cheaper and shrinks the cache 6×, at the
+        // cost of a small ranking accuracy hit. Combined with a tokenizer
+        // max_length of 256 (most docs fit comfortably), forward passes
+        // are dramatically faster than the full-precision baseline.
         // ==========================================================================
+        const EMBEDDING_DIMS = 128;       // Matryoshka truncation target
+        const MAX_SEQUENCE_LENGTH = 256;  // Tokenizer truncation length
+
+        // Slice a model output tensor to the first EMBEDDING_DIMS values
+        // and L2-renormalize. Caller passes Tensor or Float32Array.
+        function matryoshkaSlice(tensorOrArray) {
+            const src = tensorOrArray.data ? tensorOrArray.data : tensorOrArray;
+            const n = Math.min(EMBEDDING_DIMS, src.length);
+            const out = new Float32Array(n);
+            let mag = 0;
+            for (let i = 0; i < n; i++) { out[i] = src[i]; mag += src[i] * src[i]; }
+            mag = Math.sqrt(mag) || 1;
+            for (let i = 0; i < n; i++) out[i] /= mag;
+            return out;
+        }
+
+        // Add max_length + truncation tokenizer options to a pipeline
+        // call. transformers.js forwards these to the tokenizer.
+        function applyMatryoshka(opts) {
+            return Object.assign({}, opts, {
+                max_length: MAX_SEQUENCE_LENGTH,
+                truncation: true
+            });
+        }
+
         class EmbeddingCache {
-            constructor(dbName = 'portfolio_embeddings_v1', storeName = 'embeddings') {
+            // db version bumped to v2: previous cache entries are 768-dim
+            // full vectors, incompatible with the new 128-dim Matryoshka
+            // slices. Bumping invalidates them so the first load after
+            // this commit recomputes (once).
+            constructor(dbName = 'portfolio_embeddings_v2', storeName = 'embeddings') {
                 this.dbName = dbName;
                 this.storeName = storeName;
                 this._dbPromise = null;
@@ -2895,20 +2932,33 @@
             const pipe = await initGemmaEmbedder().catch(err => { console.error('[Embeddings] Gemma load failed:', err); return null; });
             if (!pipe) return;   // galaxy will fall back to TF-IDF positions
 
-            // Compute one at a time. The model is shared with live
-            // search; sequential calls keep the GPU/WASM queue from
-            // backing up.
+            // Compute one at a time, yielding after each so the cosmos
+            // animation keeps a smooth frame budget. WebGPU compute for
+            // the Gemma forward pass and the cosmos compute share the
+            // GPU command queue; without the yield, batches of 27
+            // inferences in a row would stall cosmos frames noticeably.
+            const yieldToBrowser = () => new Promise(resolve => {
+                if (typeof requestIdleCallback === 'function') {
+                    requestIdleCallback(() => resolve(), { timeout: 50 });
+                } else {
+                    setTimeout(resolve, 0);
+                }
+            });
+
             for (let i = 0; i < missing.length; i++) {
                 const { doc, hash } = missing[i];
                 if (typeof onProgress === 'function') onProgress({ phase: 'computing', done: docs.length - missing.length + i, total: docs.length });
                 try {
-                    const tensor = await pipe(getDocText(doc), { pooling: 'mean', normalize: true });
-                    const embedding = Float32Array.from(tensor.data);
+                    const tensor = await pipe(getDocText(doc), applyMatryoshka({ pooling: 'mean', normalize: true }));
+                    const embedding = matryoshkaSlice(tensor);  // 128-D, L2-normalized
                     await cache.set(hash, embedding);
                     doc.embedding = Array.from(embedding);
                 } catch (err) {
                     console.warn('[Embeddings] failed for doc:', doc.title || doc.role, err);
                 }
+                // Give the cosmos animate loop (and any user interaction)
+                // a chance to run before the next Gemma forward pass.
+                await yieldToBrowser();
             }
             if (typeof onProgress === 'function') onProgress({ phase: 'done', done: docs.length, total: docs.length });
         }
@@ -3041,18 +3091,37 @@
                     topK = 8
                 } = opts;
 
-                if (!queryEmbedding) return [];
                 const pool = projectsOnly ? this.projectsDocs : this.docs;
 
+                // If we have a Gemma query embedding AND at least some docs
+                // have cached embeddings, score by cosine in embedding space.
+                // Otherwise (Gemma still loading, or embeddings still being
+                // computed) fall back to TF-IDF over the tokenized text —
+                // search stays usable from page-load instead of being a
+                // black hole until ~8 s in.
+                const haveEmbeddings = queryEmbedding && pool.some(d => d.ref.embedding);
                 const scored = [];
-                for (const doc of pool) {
-                    const ref = doc.ref;
-                    if (!ref.embedding) continue;
-                    if (projectsOnly && category !== "all" && doc.isProject && ref.category !== category) continue;
-                    let d = 0;
-                    const n = Math.min(queryEmbedding.length, ref.embedding.length);
-                    for (let i = 0; i < n; i++) d += queryEmbedding[i] * ref.embedding[i];
-                    scored.push({ doc, score: d });
+
+                if (haveEmbeddings) {
+                    for (const doc of pool) {
+                        const ref = doc.ref;
+                        if (!ref.embedding) continue;
+                        if (projectsOnly && category !== "all" && doc.isProject && ref.category !== category) continue;
+                        let d = 0;
+                        const n = Math.min(queryEmbedding.length, ref.embedding.length);
+                        for (let i = 0; i < n; i++) d += queryEmbedding[i] * ref.embedding[i];
+                        scored.push({ doc, score: d });
+                    }
+                } else {
+                    const tokens = this.tokenize(query);
+                    if (tokens.length === 0) return [];
+                    const qv = this.getTfidfVector(tokens);
+                    for (const doc of pool) {
+                        const ref = doc.ref;
+                        if (projectsOnly && category !== "all" && doc.isProject && ref.category !== category) continue;
+                        const s = this.cosineSimilarity(qv, doc.vector);
+                        if (s > 0) scored.push({ doc, score: s });
+                    }
                 }
 
                 scored.sort((a, b) => b.score - a.score);
@@ -3285,25 +3354,25 @@
                     return;
                 }
 
-                // Embedding-only path: need the Gemma encoder to embed the query.
-                if (!window.gemmaPipeline) {
-                    this.render(this._defaultItems(category));
-                    this._lastScored = null;
-                    this.updateGalaxySearch();
-                    return;
-                }
+                // TF-IDF first — gives immediate results from the very
+                // first keystroke regardless of whether Gemma is loaded or
+                // the embeddings have finished computing.
+                this._runScoreAndRender(query, category, null);
 
+                // If Gemma is available, upgrade to embedding-based scoring
+                // when its query embedding resolves. Single in-flight
+                // request — every new keystroke bumps _currentSearchId and
+                // late-returning ones are discarded.
+                if (!window.gemmaPipeline) return;
                 const searchId = ++this._currentSearchId;
                 const prefixedQuery = "task: search result | query: " + query;
-                window.gemmaPipeline(prefixedQuery, { pooling: 'mean', normalize: true })
+                window.gemmaPipeline(prefixedQuery, applyMatryoshka({ pooling: 'mean', normalize: true }))
                     .then(tensor => {
                         if (searchId !== this._currentSearchId) return;
-                        this._runScoreAndRender(query, category, Array.from(tensor.data));
+                        this._runScoreAndRender(query, category, matryoshkaSlice(tensor));
                     })
                     .catch(err => {
                         console.error("Gemma query embedding failed:", err);
-                        if (searchId !== this._currentSearchId) return;
-                        this.render(this._defaultItems(category));
                     });
             }
 
@@ -4978,10 +5047,10 @@
                 if (window.gemmaPipeline) {
                     try {
                         const prefixedQuery = "task: search result | query: " + query;
-                        const tensor = await window.gemmaPipeline(prefixedQuery, { pooling: 'mean', normalize: true });
+                        const tensor = await window.gemmaPipeline(prefixedQuery, applyMatryoshka({ pooling: 'mean', normalize: true }));
                         if (searchId !== this._currentSearchId) return; // stale
 
-                        const queryEmbedding = Array.from(tensor.data);
+                        const queryEmbedding = Array.from(matryoshkaSlice(tensor));
 
                         // Same PCA basis the docs were positioned with — the
                         // query lands in the same semantic space, not in a
@@ -5586,49 +5655,29 @@
                 this.container.innerHTML = '';
                 this.container.appendChild(this.renderer.domElement);
 
-                // ─── Attractors (3 fixed positions) ──────────────────────
-                const attractorsPositions = uniformArray([
-                    new T.Vector3(-1, 0, 0),
-                    new T.Vector3(1, 0, -0.5),
-                    new T.Vector3(0, 0.5, 1)
-                ]);
-                const attractorsRotationAxes = uniformArray([
+                // ─── 3-body attractors (uniformly-distributed, slowly orbiting) ──
+                // Three gravity wells at the vertices of an equilateral
+                // triangle, rotating slowly around a common center.
+                // They're not true mutual N-body bodies (computing that
+                // on the CPU and pushing uniforms every frame would be a
+                // jitter source), but the slow CPU-driven rotation gives
+                // the same "wandering attractors" feel the user asked
+                // for. The visual ring+arrow helpers from the example are
+                // intentionally omitted — for a background we want the
+                // dust to be the only thing visible.
+                this._attractorPositions = [
+                    new T.Vector3(-1.25, 0,    0),
+                    new T.Vector3( 1.25, 0,   -0.5),
+                    new T.Vector3( 0,    0.5,  1)
+                ];
+                this._attractorAxes = [
                     new T.Vector3(0, 1, 0),
                     new T.Vector3(0, 1, 0),
                     new T.Vector3(1, 0, -0.5).normalize()
-                ]);
-                const attractorsLength = uniform(attractorsPositions.array.length, 'uint');
-
-                // Visual ring + arrow helpers for each attractor — same as
-                // the example but without TransformControls so the user
-                // can't drag them around (this is a background, not a toy).
-                const ringGeom = new T.RingGeometry(1, 1.02, 32, 1, 0, Math.PI * 1.5);
-                const arrowGeom = new T.ConeGeometry(0.1, 0.4, 12, 1, false);
-                const helperMat = new T.MeshBasicMaterial({ side: T.DoubleSide });
-
-                for (let i = 0; i < attractorsPositions.array.length; i++) {
-                    const reference = new T.Object3D();
-                    reference.position.copy(attractorsPositions.array[i]);
-                    reference.quaternion.setFromUnitVectors(
-                        new T.Vector3(0, 1, 0),
-                        attractorsRotationAxes.array[i]
-                    );
-                    this.scene.add(reference);
-
-                    const helper = new T.Group();
-                    helper.scale.setScalar(0.325);
-                    reference.add(helper);
-
-                    const ring = new T.Mesh(ringGeom, helperMat);
-                    ring.rotation.x = -Math.PI * 0.5;
-                    helper.add(ring);
-
-                    const arrow = new T.Mesh(arrowGeom, helperMat);
-                    arrow.position.x = 1;
-                    arrow.position.z = 0.2;
-                    arrow.rotation.x = Math.PI * 0.5;
-                    helper.add(arrow);
-                }
+                ];
+                const attractorsPositions = uniformArray(this._attractorPositions);
+                const attractorsRotationAxes = uniformArray(this._attractorAxes);
+                const attractorsLength = uniform(this._attractorPositions.length, 'uint');
 
                 // ─── Particles ────────────────────────────────────────────
                 const count = Math.pow(2, 18); // 262 144 — same as the example
@@ -5640,15 +5689,25 @@
 
                 const attractorMass     = uniform(Number(`1e${7}`));
                 const particleGlobalMass = uniform(Number(`1e${4}`));
-                const timeScale          = uniform(1);
+                // timeScale 0.55 (down from 1.0) — slower particles, the
+                // overall motion still feels lively but individual streaks
+                // are easier to follow.
+                const timeScale          = uniform(0.55);
                 const spinningStrength   = uniform(2.75);
-                const maxSpeed           = uniform(8);
+                const maxSpeed           = uniform(6);                // 8 → 6 (slower top speed)
                 const gravityConstant    = 6.67e-11;
                 const velocityDamping    = uniform(0.1);
                 const scaleU             = uniform(0.008);
                 const boundHalfExtent    = uniform(8);
                 const colorA             = uniform(color('#5900ff'));
                 const colorB             = uniform(color('#ffa575'));
+                // Cursor attractor: xyz = world-space target, w = strength
+                // (0 = off). Updated from JS on pointerdown/move/up. Lives
+                // in addition to the 3 static attractors, so clicking
+                // creates a transient 4th gravity well that pulls particles
+                // into the click point.
+                this._uCursor = uniform(new T.Vector4(0, 0, 0, 0));
+                const uCursor = this._uCursor;
 
                 const positionBuffer = instancedArray(count, 'vec3');
                 const velocityBuffer = instancedArray(count, 'vec3');
@@ -5718,6 +5777,21 @@
                         force.addAssign(spinningVelocity);
                     });
 
+                    // Cursor attractor — gated on uCursor.w (its strength).
+                    // Stronger than the static attractors so clicks visibly
+                    // grab particles out of the swirl. No spinning term, so
+                    // the cursor pulls particles straight in.
+                    If(uCursor.w.greaterThan(float(0.0)), () => {
+                        const toCursor = uCursor.xyz.sub(position);
+                        const dist = toCursor.length().max(float(0.05));
+                        const dir = toCursor.div(dist);
+                        const cursorStrength = uCursor.w
+                            .mul(attractorMass).mul(particleMass).mul(gravityConstant)
+                            .mul(float(3.0))                 // 3× the static attractor mass
+                            .div(dist.pow(2)).toVar();
+                        force.addAssign(dir.mul(cursorStrength));
+                    });
+
                     velocity.addAssign(force.mul(delta));
                     const speed = velocity.length();
                     If(speed.greaterThan(maxSpeed), () => {
@@ -5751,8 +5825,18 @@
                 const mesh = new T.InstancedMesh(geometry, material, count);
                 this.scene.add(mesh);
 
+                // Stash references the animate / event handlers need.
+                this._T = T;
+                this._attractorsPositionsArr = this._attractorPositions;
+                this._cosmosStartTime = performance.now();
+                this._baseCameraRadius = 9;
+                this._baseCameraHeight = 4;
+
                 // Reveal canvas; the CSS already has the opacity transition.
                 this.container.style.opacity = "1";
+
+                // ─── Pointer interaction (cursor attractor) ──────────────
+                this._installPointerHandlers();
 
                 // ─── Animate ─────────────────────────────────────────────
                 // WebGPURenderer's setAnimationLoop is the supported way to
@@ -5763,7 +5847,51 @@
                 window.addEventListener("resize", () => this._handleResize(), { passive: true });
             }
 
+            // Pointer events: pointerdown sets uCursor.w = 1 (active), pointermove
+            // continuously updates the world-space cursor target by projecting
+            // the cursor NDC onto a plane through the simulation center
+            // perpendicular to the camera forward. pointerup clears it.
+            _installPointerHandlers() {
+                const T = this._T;
+                const reproject = (e) => {
+                    const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
+                    const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
+                    const v = new T.Vector3(ndcX, ndcY, 0.5).unproject(this.camera);
+                    const dir = v.sub(this.camera.position).normalize();
+                    // Hit the plane y = 0 (where the static attractors live).
+                    if (Math.abs(dir.y) < 1e-4) return null;
+                    const t = -this.camera.position.y / dir.y;
+                    if (t < 0) return null;
+                    return {
+                        x: this.camera.position.x + dir.x * t,
+                        y: 0,
+                        z: this.camera.position.z + dir.z * t
+                    };
+                };
+                this._pointerDown = false;
+                window.addEventListener("pointerdown", (e) => {
+                    this._pointerDown = true;
+                    const p = reproject(e);
+                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
+                }, { passive: true });
+                window.addEventListener("pointermove", (e) => {
+                    if (!this._pointerDown) return;
+                    const p = reproject(e);
+                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
+                }, { passive: true });
+                const release = () => {
+                    this._pointerDown = false;
+                    this._uCursor.value.w = 0.0;
+                };
+                window.addEventListener("pointerup", release, { passive: true });
+                window.addEventListener("pointercancel", release, { passive: true });
+                window.addEventListener("pointerleave", release, { passive: true });
+            }
+
             _animate() {
+                this._updateCameraFromScroll();
+                this._driftAttractors();
+
                 this.renderer.compute(this.updateCompute);
                 this.renderer.render(this.scene, this.camera);
 
@@ -5773,6 +5901,46 @@
                     window._resolveCosmosReady = null;
                     r();
                 }
+            }
+
+            // Camera angle tied to scroll position. As the user scrolls down,
+            // the camera orbits around the y axis and slowly rises, so each
+            // section of the page sees the cosmos from a different vantage.
+            _updateCameraFromScroll() {
+                const scrollY = window.scrollY;
+                const doc = document.documentElement;
+                const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
+                const t = Math.min(1, Math.max(0, scrollY / maxScroll));
+                // ~135° of rotation across the full scroll range, plus a
+                // small idle drift driven by time so the cosmos doesn't
+                // feel frozen when the user is at the top.
+                const idleDrift = (performance.now() - this._cosmosStartTime) * 0.00004;
+                const angle = idleDrift + t * Math.PI * 0.75;
+                const r = this._baseCameraRadius;
+                const h = this._baseCameraHeight + t * 1.5;
+                const targetX = Math.cos(angle) * r;
+                const targetZ = Math.sin(angle) * r;
+                // Lerp the camera toward the target so scroll feels weighted
+                // instead of jittery.
+                this.camera.position.x += (targetX - this.camera.position.x) * 0.06;
+                this.camera.position.z += (targetZ - this.camera.position.z) * 0.06;
+                this.camera.position.y += (h        - this.camera.position.y) * 0.06;
+                this.camera.lookAt(0, 0, 0);
+            }
+
+            // Slowly orbit the three static attractors around their centroid
+            // so the swirl pattern shifts over time — visually communicates
+            // "3-body" without the chaos (and main-thread cost) of a true
+            // mutual N-body simulation.
+            _driftAttractors() {
+                const t = (performance.now() - this._cosmosStartTime) * 0.0002;
+                const R = 1.25;
+                const positions = this._attractorPositions;
+                positions[0].set(Math.cos(t)           * R,  0.0,                Math.sin(t)           * R);
+                positions[1].set(Math.cos(t + 2.094)   * R,  0.0,                Math.sin(t + 2.094)   * R);
+                positions[2].set(Math.cos(t * 0.8 + 4.188) * R * 0.6,
+                                 Math.sin(t * 0.5) * 0.5,
+                                 Math.sin(t * 0.8 + 4.188) * R * 0.6);
             }
 
             _handleResize() {
