@@ -2,16 +2,21 @@
 
 An interactive portfolio combining three on-device systems:
 
-1. **N-body black-hole cosmos** — the always-on space background.
-   WebGL2 GPGPU compute (via `GPUComputationRenderer`): Newtonian
+1. **WebGPU N-body black-hole cosmos** — the always-on space
+   background. Physics in TSL compute shaders running on
+   WebGPURenderer (`instancedArray` storage buffers for position +
+   velocity, ping-ponged by the compute Fn each frame). Newtonian
    gravity to a central black hole, bipolar jets ejected when a
    particle crosses the event horizon, Keplerian respawn at the outer
-   rim, and a click-and-drag cursor attractor (direct-set, no JS-side
-   lerp — the gravity field itself produces the smooth curving
-   trails). Camera position lerps between per-section keyframes
-   (hero / about / projects / chat / timeline) as you scroll, so
-   each section sees the cosmos from a different angle. CPU
-   per-frame cost is ~zero.
+   rim, click-and-drag cursor attractor (direct-set, no JS-side lerp).
+   Sprite-based rendering with a speed-tinted color ramp
+   (`#3a78ff → #ffb066 → #fff4d4`) plus a pink-magenta tint
+   (`#ff5fb7`) for particles in the polar jet. 2^18 = 262 144
+   sprites on desktop, 2^15 = 32 768 on mobile. Camera position
+   lerps between per-section keyframes
+   (hero / about / projects / chat / timeline) as you scroll, with
+   a subtle mouse-parallax offset on top. CPU per-frame cost is
+   ~zero.
 2. **3D Semantic Galaxy** — every project / experience node is placed by
    running PCA on its 128-D **EmbeddingGemma** vector (Matryoshka-sliced
    from the model's 768-D output) and projecting onto a sphere. Distance

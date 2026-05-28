@@ -11,14 +11,20 @@
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Import Map for ES Modules. The cosmos is now WebGL2 GPGPU
-         (GPUComputationRenderer) so we don't need the WebGPU build any
-         more. `three.module.js` is the only Three.js build the page
-         consumes. -->
+    <!-- Import Map for ES Modules.
+         - `three` (three.module.js) — WebGL build, used by the
+           SemanticGalaxy (WebGLRenderer + OrbitControls/TrackballControls).
+         - `three/webgpu` (three.webgpu.js) — WebGPU build,
+           used by the cosmos.
+         - `three/tsl` — Three.js Shader Language, exposes Fn / If /
+           Loop / instancedArray / hash etc. for the cosmos compute
+           shaders. -->
     <script type="importmap">
         {
             "imports": {
                 "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
+                "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js",
+                "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js",
                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/",
                 "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js"
             }
@@ -27,8 +33,9 @@
     <!-- Modulepreload hints. Browser begins fetching during HTML parse;
          loadThreeJS() then resolves from the warm cache in one tick. -->
     <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js" crossorigin>
     <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js" crossorigin>
-    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/misc/GPUComputationRenderer.js" crossorigin>
     <!-- Non-Module Libraries. `defer` lets HTML parsing continue while
          these download — they're only used by the chatbot's response
          renderer (DOMPurify.sanitize(marked.parse(...))), so they don't
@@ -2139,27 +2146,31 @@
         // Three.js is loaded lazily via dynamic import so that a CDN failure or a
         // browser without importmap support (iOS Safari < 16.4) never prevents the
         // data / UI layer from running.
-        let THREE = null, OrbitControls = null, TrackballControls = null, GPUComputationRenderer = null;
+        // THREE  — classic WebGL build (galaxy, anything that needs
+        //          WebGLRenderer).
+        // WEBGPU — WebGPU-flavored build (cosmos only).
+        // TSL    — shader language nodes used by the cosmos.
+        let THREE = null, WEBGPU = null, TSL = null,
+            OrbitControls = null, TrackballControls = null;
         async function loadThreeJS() {
             if (THREE !== null) return true;
-            // Fire all module fetches in parallel via Promise.all so
-            // cold-cache load time is bounded by the slowest single file
-            // instead of summed.
             const settle = (url) => import(url).then(m => m, err => { console.warn('Module load failed:', url, err); return null; });
             try {
                 const [
-                    threeMod, ocMod, tcMod, gpgpuMod
+                    threeMod, ocMod, tcMod, wgpuMod, tslMod
                 ] = await Promise.all([
                     settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js'),
                     settle('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js'),
                     settle('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TrackballControls.js'),
-                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/misc/GPUComputationRenderer.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.webgpu.js'),
+                    settle('https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.tsl.js'),
                 ]);
                 if (!threeMod) throw new Error('three.module.js failed to load');
                 THREE = threeMod;
                 OrbitControls = ocMod?.OrbitControls || null;
                 TrackballControls = tcMod?.TrackballControls || null;
-                GPUComputationRenderer = gpgpuMod?.GPUComputationRenderer || null;
+                WEBGPU = wgpuMod || null;
+                TSL = tslMod || null;
                 return true;
             } catch (e) {
                 console.warn('Three.js failed to load — 3D features disabled:', e);
@@ -5559,968 +5570,401 @@
         document.head.appendChild(tooltipStyle);
 
         // ==========================================================================
-        // 3D COSMOS & PARTICLE GALAXY BACKGROUND
+        // BLACK-HOLE COSMOS (WebGPU + TSL compute)
+        // ==========================================================================
+        // GPU N-body cosmos rendered via WebGPURenderer + TSL compute
+        // shaders. Newtonian gravity to a central black hole, bipolar
+        // jets when a particle crosses the event horizon, Keplerian
+        // respawn at the outer rim, click-and-drag cursor attractor,
+        // and per-section camera keyframes interpolated as you scroll.
+        // Storage is two `instancedArray(N, 'vec3')` buffers (position
+        // + velocity) which the compute Fn updates in place each
+        // frame; rendering is a SpriteNodeMaterial on an InstancedMesh
+        // reading positions back via `.toAttribute()`.
+        //
+        // Tuning constants:
+        //   COUNT          — particle count. Powers of 2 align cleanly
+        //                    with GPU wavefronts. Desktop: 2^18 = 262 144,
+        //                    mobile: 2^15 = 32 768.
+        //   BH_Y           — vertical position of the black hole.
+        //   EVENT_HORIZON  — absorption radius. Smaller = denser core.
+        //   R_OUT          — outer-rim respawn boundary.
+        //   G              — gravitational constant.
+        //   PARTICLE_SCALE — sprite size; bigger = brighter cloud.
         // ==========================================================================
         class CosmosBackgroundController {
             constructor() {
                 this.container = document.getElementById("splat-canvas-container");
-                this.widget = document.getElementById("splat-loading-widget");
-
+                this.widget    = document.getElementById("splat-loading-widget");
                 if (!this.container) return;
-
-                // Procedural WebGL Cosmos loads instantly, remove loading spinner
-                if (this.widget) {
-                    this.widget.remove();
-                }
-
-                // Adaptive load: detect mobile and low-end devices so we can
-                // cut particle counts and physics work roughly in half on
-                // phones. Desktop keeps the full 38k pool; mobile drops to
-                // 16k. Substeps drop from 2 → 1 on mobile too.
-                this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-                    || window.innerWidth <= 768
-                    || (navigator.hardwareConcurrency || 8) <= 4;
-
-                this.scene = new THREE.Scene();
-
-                // Calculate pixel ratio for high-DPI scaling of WebGL points.
-                // Clamp harder on mobile so we're not pushing 3× pixels.
-                this.pixelRatio = this.isMobile
-                    ? Math.min(window.devicePixelRatio, 1.5)
-                    : Math.min(window.devicePixelRatio, 2);
-        
-                // Setup Perspective Camera
-                this.camera = new THREE.PerspectiveCamera(50, this.container.clientWidth / this.container.clientHeight, 0.1, 100);
-                this.camera.position.set(0, 1.5, 4);
-        
-                // Setup WebGLRenderer
-                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-                this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-                this.renderer.setPixelRatio(this.pixelRatio);
-                
-                // Remove any old canvas elements inside container
-                this.container.innerHTML = '';
-                this.container.appendChild(this.renderer.domElement);
-        
-                this.isLoaded = true;
-                window.particlesActive = false; // Disable 2D particles fallback
-                // Container stays at CSS-default opacity 0 until the first
-                // progressive chunk of particles is live; then we set
-                // opacity to 1 and the CSS transition fades the cosmos in.
+                if (this.widget) this.widget.remove();
                 document.body.classList.add("bg-splat-active");
-        
-                // Predefined camera keyframes for each section
-                this.keyframes = {
-                    'hero': { pos: new THREE.Vector3(0, 1.5, 4), lookAt: new THREE.Vector3(0, 0, 0) },
-                    'about': { pos: new THREE.Vector3(-2, 1, 3.5), lookAt: new THREE.Vector3(0, 0.5, 0) },
-                    'projects': { pos: new THREE.Vector3(2, 0.7, 2.5), lookAt: new THREE.Vector3(0, 0.2, 0) },
-                    'chat': { pos: new THREE.Vector3(0, 2.5, 3.5), lookAt: new THREE.Vector3(0, 0.5, 0) },
-                    'timeline': { pos: new THREE.Vector3(-1.8, 1.8, 3.2), lookAt: new THREE.Vector3(0, 0.3, 0) }
-                };
-        
-                // Current target vectors (interpolated towards keyframes)
-                this.targetPos = this.keyframes.hero.pos.clone();
-                this.targetLook = this.keyframes.hero.lookAt.clone();
-                this.currentLookAt = this.keyframes.hero.lookAt.clone();
-        
-                // Parallax vectors
+
+                this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                    || window.innerWidth <= 768;
+
+                // Camera keyframes for each section. Position + lookAt
+                // get lerped between adjacent keyframes by scroll progress.
+                // The page-camera and mouse-parallax handlers attach
+                // immediately (before WebGPU init finishes) so the
+                // camera state is alive even while the cosmos is still
+                // warming up.
+                this.keyframes = null;        // populated once WEBGPU is loaded
+                this.targetPos = null;
+                this.targetLook = null;
+                this.currentLookAt = null;
+
                 this.mouseX = 0;
                 this.mouseY = 0;
-        
-                // Build the cosmos in a deferred frame. Shader compilation
-                // and the GPGPU texture upload can block the main thread for
-                // 20–50ms on first run; deferring by one rAF lets the page
-                // paint once with the hero text/logo before that hit. The
-                // animate loop starts immediately so the camera/scroll lerps
-                // are alive while the cosmos is still warming up.
-                if (typeof requestIdleCallback === "function") {
-                    requestIdleCallback(() => this.createCosmos(), { timeout: 100 });
-                } else {
-                    setTimeout(() => this.createCosmos(), 0);
-                }
-        
-                window.addEventListener("resize", () => this.handleResize(), { passive: true });
-                window.addEventListener("scroll", () => this.handleScroll(), { passive: true });
-                window.addEventListener("mousemove", (e) => this.handleMouseMove(e), { passive: true });
 
-                // Press-anywhere gravitational well. Pointer events unify
-                // mouse + touch + pen, so phones get the well immediately
-                // on tap (no 300ms click delay) and a hold-and-drag carries
-                // the well continuously under the finger. We update the
-                // attractor's TARGET on every pointermove (cheap NDC
-                // unproject); the animate loop lerps the actual attractor
-                // position toward it so the well moves like a heavy ball
-                // following the cursor instead of teleporting between
-                // throttled snapshots.
+                // Defer the heavy WebGPU init by one idle frame.
+                if (typeof requestIdleCallback === "function") {
+                    requestIdleCallback(() => this._init(), { timeout: 100 });
+                } else {
+                    setTimeout(() => this._init(), 0);
+                }
+            }
+
+            async _init() {
+                try {
+                    await this._buildCosmos();
+                } catch (err) {
+                    console.error("WebGPU cosmos init failed:", err);
+                    if (window._resolveCosmosReady) {
+                        const r = window._resolveCosmosReady;
+                        window._resolveCosmosReady = null;
+                        r();
+                    }
+                }
+            }
+
+            async _buildCosmos() {
+                if (!WEBGPU) throw new Error('WebGPU build of three.js not loaded');
+                if (!TSL)    throw new Error('TSL module not loaded');
+                if (!WEBGPU.WebGPURenderer) throw new Error('WebGPURenderer missing');
+
+                const T = WEBGPU;
+                const {
+                    Fn, If, PI, color, cos, sin, float, instanceIndex, Loop, mix,
+                    instancedArray, uint, uniform, uniformArray, hash, vec3, vec4
+                } = TSL;
+
+                // ── Physics constants ────────────────────────────────────
+                const BH_Y          = -0.4;
+                const EVENT_HORIZON = 0.32;
+                const R_OUT         = 17.0;
+                const G_CONST       = 0.65;
+
+                const COUNT = this.isMobile ? Math.pow(2, 15) : Math.pow(2, 18);
+
+                // ── Camera + scene ───────────────────────────────────────
+                this.camera = new T.PerspectiveCamera(
+                    50,
+                    this.container.clientWidth / this.container.clientHeight,
+                    0.1,
+                    100
+                );
+                this.camera.position.set(0, 1.5, 4);
+
+                this.keyframes = {
+                    'hero':     { pos: new T.Vector3(0,    1.5, 4),   lookAt: new T.Vector3(0, 0,   0) },
+                    'about':    { pos: new T.Vector3(-2,   1,   3.5), lookAt: new T.Vector3(0, 0.5, 0) },
+                    'projects': { pos: new T.Vector3(2,    0.7, 2.5), lookAt: new T.Vector3(0, 0.2, 0) },
+                    'chat':     { pos: new T.Vector3(0,    2.5, 3.5), lookAt: new T.Vector3(0, 0.5, 0) },
+                    'timeline': { pos: new T.Vector3(-1.8, 1.8, 3.2), lookAt: new T.Vector3(0, 0.3, 0) }
+                };
+                this.targetPos     = this.keyframes.hero.pos.clone();
+                this.targetLook    = this.keyframes.hero.lookAt.clone();
+                this.currentLookAt = this.keyframes.hero.lookAt.clone();
+
+                this.scene = new T.Scene();
+
+                // ── Renderer (opaque so no per-frame alpha-blend) ────────
+                this.renderer = new T.WebGPURenderer({ antialias: true, alpha: false });
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+                this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+                this.renderer.setClearColor('#000000', 1);
+                await this.renderer.init();
+                this.container.innerHTML = '';
+                this.container.appendChild(this.renderer.domElement);
+
+                // ── Uniforms ─────────────────────────────────────────────
+                const timeScale  = uniform(0.55);
+                const maxSpeed   = uniform(5.5);
+                const scaleU     = uniform(0.014);                   // a touch bigger than the previous 0.008
+                const colorCool  = uniform(color('#3a78ff'));        // accretion blue
+                const colorWarm  = uniform(color('#ffb066'));        // photon-ring orange
+                const colorHot   = uniform(color('#fff4d4'));        // hot core white
+                const colorJet   = uniform(color('#ff5fb7'));        // pink-magenta for bipolar jets
+                const bhY        = uniform(float(BH_Y));
+                const bhEH       = uniform(float(EVENT_HORIZON));
+                const bhEH2      = uniform(float(EVENT_HORIZON * EVENT_HORIZON));
+                const bhROUT2    = uniform(float(R_OUT * R_OUT));
+                const bhG        = uniform(float(G_CONST));
+                const cursorU    = uniform(new T.Vector4(0, BH_Y, 0, 0));  // xyz pos, w = strength (0 = off)
+                this._uCursor    = cursorU;
+
+                // Per-particle storage buffers.
+                const positionBuffer = instancedArray(COUNT, 'vec3');
+                const velocityBuffer = instancedArray(COUNT, 'vec3');
+
+                // Per-particle mass jitter (used for size variation).
+                const massMul = hash(instanceIndex.add(uint(73108)))
+                    .remap(0.4, 1).toVar();
+
+                // ── Init compute (one-shot, Keplerian disk) ──────────────
+                const initFn = Fn(() => {
+                    const idx = instanceIndex;
+
+                    // Radius distribution: power-law toward small r for
+                    // a dense inner disk + sparser outer halo.
+                    const r = float(0.6).add(hash(idx.add(uint(0x100))).pow(2.4).mul(13));
+                    const theta = hash(idx.add(uint(0x200))).mul(PI).mul(2);
+                    const yJit = hash(idx.add(uint(0x300))).sub(0.5)
+                        .mul(float(0.05).add(r.mul(0.06)));
+
+                    positionBuffer.element(idx).assign(vec3(
+                        r.mul(cos(theta)),
+                        bhY.add(yJit),
+                        r.mul(sin(theta))
+                    ));
+
+                    // Tangential velocity ≈ sqrt(G/r) (circular orbit).
+                    const vMag = bhG.div(r).sqrt();
+                    const radial = hash(idx.add(uint(0x400))).sub(0.5).mul(vMag).mul(0.05);
+                    velocityBuffer.element(idx).assign(vec3(
+                        sin(theta).negate().mul(vMag).add(cos(theta).mul(radial)),
+                        float(0),
+                        cos(theta).mul(vMag).add(sin(theta).mul(radial))
+                    ));
+                });
+                const initCompute = initFn().compute(COUNT);
+                await this.renderer.computeAsync(initCompute);
+
+                // ── Per-frame update compute ─────────────────────────────
+                const updateFn = Fn(() => {
+                    const idx = instanceIndex;
+                    const delta = float(1 / 60).mul(timeScale);
+                    const position = positionBuffer.element(idx);
+                    const velocity = velocityBuffer.element(idx);
+
+                    const bhPos = vec3(float(0), bhY, float(0));
+                    const toBH  = bhPos.sub(position);
+                    const r2    = toBH.dot(toBH);
+
+                    If(r2.lessThan(bhEH2), () => {
+                        // ── Event horizon crossing: eject as bipolar jet ──
+                        // Particle parity decides ±Y direction. Hash-based
+                        // (instead of index mod 2) so consecutive indices
+                        // don't all flip the same way and you actually see
+                        // two columns of light blasting out of the BH.
+                        const parity = hash(idx.add(uint(0xa11ce))).step(0.5);
+                        const sign = parity.mul(2.0).sub(1.0);
+                        const jetSpeed = float(2.5).add(hash(idx.add(uint(0xb0b))).mul(1.0));
+                        const lateral  = hash(idx.add(uint(0xc1c))).sub(0.5).mul(0.25);
+                        const lateral2 = hash(idx.add(uint(0xd2d))).sub(0.5).mul(0.25);
+                        const newPos = vec3(
+                            hash(idx.add(uint(0xe3e))).sub(0.5).mul(0.08),
+                            bhY.add(sign.mul(float(EVENT_HORIZON + 0.04))),
+                            hash(idx.add(uint(0xf4f))).sub(0.5).mul(0.08)
+                        );
+                        const newVel = vec3(
+                            lateral,
+                            sign.mul(jetSpeed),
+                            lateral2
+                        );
+                        position.assign(newPos);
+                        velocity.assign(newVel);
+                    }).Else(() => {
+                        If(r2.greaterThan(bhROUT2), () => {
+                            // ── Outer-rim escape: respawn in a fresh Kepler orbit ──
+                            const r = float(10.0).add(hash(idx.add(uint(0x5050))).mul(6));
+                            const th = hash(idx.add(uint(0x6060))).mul(PI).mul(2);
+                            const v = bhG.div(r).sqrt();
+                            position.assign(vec3(
+                                r.mul(cos(th)),
+                                bhY.add(hash(idx.add(uint(0x7070))).sub(0.5).mul(0.05)),
+                                r.mul(sin(th))
+                            ));
+                            velocity.assign(vec3(
+                                sin(th).negate().mul(v),
+                                float(0),
+                                cos(th).mul(v)
+                            ));
+                        }).Else(() => {
+                            // ── Normal step: gravity + cursor + integrate ──
+                            const invR = float(1.0).div(r2.add(0.0025).sqrt());
+                            const accScale = bhG.mul(invR).mul(invR).mul(invR);
+                            const acc = toBH.mul(accScale).toVar();
+
+                            // Cursor attractor (gated on cursorU.w > 0).
+                            If(cursorU.w.greaterThan(float(0.0)), () => {
+                                const toC = cursorU.xyz.sub(position);
+                                const cInv = float(1.0).div(toC.dot(toC).add(0.04).sqrt());
+                                const cScale = cursorU.w.mul(float(0.38))
+                                    .mul(cInv).mul(cInv).mul(cInv);
+                                acc.addAssign(toC.mul(cScale));
+                            });
+
+                            velocity.addAssign(acc.mul(delta));
+
+                            // Velocity clamp keeps close passes stable.
+                            const spd = velocity.length();
+                            If(spd.greaterThan(maxSpeed), () => {
+                                velocity.assign(velocity.normalize().mul(maxSpeed));
+                            });
+
+                            position.addAssign(velocity.mul(delta));
+                        });
+                    });
+                });
+                this.updateCompute = updateFn().compute(COUNT);
+
+                // ── Render material (sprite, additive, speed-tinted) ─────
+                const material = new T.SpriteNodeMaterial({
+                    blending:    T.AdditiveBlending,
+                    depthWrite:  false,
+                    transparent: true
+                });
+
+                material.positionNode = positionBuffer.toAttribute();
+                material.colorNode = Fn(() => {
+                    const v = velocityBuffer.toAttribute();
+                    const speed = v.length();
+
+                    // Speed-based color ramp: cool blue → warm orange → hot white.
+                    const t   = speed.div(maxSpeed).smoothstep(0, 0.55);
+                    const tHi = speed.div(maxSpeed).smoothstep(0.78, 1.0);
+                    let col = mix(colorCool, colorWarm, t);
+                    col = mix(col, colorHot, tHi);
+
+                    // Particles whose velocity has a big |y| component are
+                    // probably in the bipolar jet — tint them pink-magenta
+                    // for visual punch.
+                    const verticalFrac = v.y.abs().div(speed.add(0.001));
+                    const jetMix = verticalFrac.smoothstep(0.55, 0.95);
+                    col = mix(col, colorJet, jetMix.mul(0.85));
+
+                    return vec4(col.mul(0.7), 1.0);
+                })();
+
+                // Per-particle sprite scale: mass-jitter × global scale.
+                // Smaller far from camera (built into Sprite projection).
+                material.scaleNode = scaleU.mul(massMul);
+
+                const geom = new T.PlaneGeometry(1, 1);
+                const mesh = new T.InstancedMesh(geom, material, COUNT);
+                mesh.frustumCulled = false;     // particles wrap; box culling is wrong
+                this.scene.add(mesh);
+
+                // (Decided to skip a separate starfield layer: a quarter-
+                // million particles in a self-gravitating swirl already
+                // saturate the visual field, and a second TSL pipeline
+                // for static stars would only add compositor work.)
+
+                // ── Reveal canvas + start animation loop ─────────────────
+                this.container.style.opacity = "1";
+                this.renderer.setAnimationLoop(() => this._animate());
+
+                // ── Event listeners (after init so they reference real renderer) ──
+                window.addEventListener("resize",    () => this._handleResize(),     { passive: true });
+                window.addEventListener("scroll",    () => this._handleScroll(),     { passive: true });
+                window.addEventListener("mousemove", (e) => this._handleMouseMove(e), { passive: true });
+                this._installPointerHandlers(T);
+                this._handleScroll();
+            }
+
+
+            // ── Cursor → world unprojection + uniform write ──────────────
+            _installPointerHandlers(T) {
+                const reproject = (e) => {
+                    const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
+                    const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
+                    const v = new T.Vector3(ndcX, ndcY, 0.5).unproject(this.camera);
+                    const dir = v.sub(this.camera.position);
+                    const BHy = -0.4;
+                    if (Math.abs(dir.y) < 1e-4) return null;
+                    const t = (BHy - this.camera.position.y) / dir.y;
+                    if (t <= 0) return null;
+                    return {
+                        x: this.camera.position.x + dir.x * t,
+                        y: BHy,
+                        z: this.camera.position.z + dir.z * t
+                    };
+                };
                 this._pointerDown = false;
                 window.addEventListener("pointerdown", (e) => {
                     this._pointerDown = true;
-                    this.spawnClickBurst(e);
+                    const p = reproject(e);
+                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
                 }, { passive: true });
                 window.addEventListener("pointermove", (e) => {
                     if (!this._pointerDown) return;
-                    this.spawnClickBurst(e);
+                    const p = reproject(e);
+                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
                 }, { passive: true });
-                const releasePointer = () => {
+                const release = () => {
                     this._pointerDown = false;
-                    this.removeAttractor();
+                    this._uCursor.value.w = 0;
                 };
-                window.addEventListener("pointerup",     releasePointer, { passive: true });
-                window.addEventListener("pointercancel", releasePointer, { passive: true });
-                window.addEventListener("pointerleave",  releasePointer, { passive: true });
-
-                this.handleScroll(); // initial camera computation
-                this.animate();      // start animation loop
+                window.addEventListener("pointerup",     release, { passive: true });
+                window.addEventListener("pointercancel", release, { passive: true });
+                window.addEventListener("pointerleave", release, { passive: true });
             }
 
-            // Cursor attractor: an invisible gravity source that follows the
-            // cursor during drag. Particles are pulled toward it via the
-            // same N-body physics, creating a striking gravitational well
-            // effect. No visible marker — the curving particle paths ARE
-            // the visualization. Position is smoothed in animate() via a
-            // target/current lerp so the well doesn't jump between frames.
-            spawnClickBurst(e) {
-                // Works on either path: GPGPU stores BH_Y in _bhConst; the
-                // CPU fallback adds it again on _simState. Bail only if
-                // neither cosmos is set up yet.
-                if (!this._bhConst && !this._simState) return;
-
-                // Project click NDC through the camera onto the y = BH_Y plane.
-                const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
-                const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
-                const v = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(this.camera);
-                const dir = v.sub(this.camera.position);
-                const BHy = (this._bhConst ? this._bhConst.BH_Y : this._simState.BH_Y);
-                if (Math.abs(dir.y) < 1e-4) return;
-                const tHit = (BHy - this.camera.position.y) / dir.y;
-                if (tHit <= 0) return;
-                const cx = this.camera.position.x + dir.x * tHit;
-                const cy = BHy;
-                const cz = this.camera.position.z + dir.z * tHit;
-
-                if (!this._attractor) {
-                    // First pointer down — create the well at the cursor.
-                    this._attractor = {
-                        x: cx, y: cy, z: cz,
-                        mass: 0.38,        // gentler pull → smoother streams
-                        softening: 0.04    // bigger softening → no velocity spikes near origin
-                    };
-                } else {
-                    // Subsequent pointer move — write the new world-space
-                    // target straight onto the attractor. No JS-side lerp:
-                    // the gravity field itself produces the smooth trails,
-                    // and pointermove fires at the browser's render rate so
-                    // the well "follows" the cursor without lagging behind.
-                    this._attractor.x = cx;
-                    this._attractor.y = cy;
-                    this._attractor.z = cz;
-                }
-            }
-
-            // Release: give nearby particles an outward radial kick so the
-            // gathered cluster bursts back into the field instead of just
-            // disappearing. On the GPGPU path this is a one-frame uniform —
-            // the shader applies the kick in parallel for every particle in
-            // range. On the CPU fallback we walk the position array.
-            removeAttractor() {
-                if (this._attractor) {
-                    const ax = this._attractor.x;
-                    const ay = this._attractor.y;
-                    const az = this._attractor.z;
-                    const RADIUS = 0.85;
-
-                    if (this._gpgpu) {
-                        // Schedule a one-shot burst pulse — animate clears it next frame.
-                        this._pendingBurst = { x: ax, y: ay, z: az, w: RADIUS };
-                    } else if (this._simState) {
-                        const s = this._simState;
-                        const RADIUS2 = RADIUS * RADIUS;
-                        const activeN = this._initializationIndex || s.N;
-                        for (let i = 0; i < activeN; i++) {
-                            const dx = s.positions[i*3]     - ax;
-                            const dy = s.positions[i*3 + 1] - ay;
-                            const dz = s.positions[i*3 + 2] - az;
-                            const d2 = dx*dx + dy*dy + dz*dz;
-                            if (d2 > RADIUS2 || d2 < 1e-6) continue;
-                            const inv = 1.0 / Math.sqrt(d2);
-                            const kick = 1.8 * (1 - Math.sqrt(d2) / RADIUS);
-                            s.velocities[i*3]     += dx * inv * kick;
-                            s.velocities[i*3 + 1] += dy * inv * kick;
-                            s.velocities[i*3 + 2] += dz * inv * kick;
-                        }
-                    }
-                }
-                this._attractor = null;
-            }
-        
-            handleResize() {
-                const width = this.container.clientWidth;
-                const height = this.container.clientHeight;
-                this.camera.aspect = width / height;
-                this.camera.updateProjectionMatrix();
-                this.renderer.setSize(width, height);
-            }
-        
-            createCosmos() {
-                // ──────────────────────────────────────────────────────────
-                // GPGPU N-body cosmos. The physics (gravity to a central
-                // black hole + a cursor attractor + event-horizon ejection
-                // as bipolar jets + outer-rim respawn) runs entirely on the
-                // GPU as fragment shaders writing to float textures, with
-                // position and velocity ping-ponged between two textures
-                // each frame. Particle render reads those textures in the
-                // vertex shader. Conceptually the same approach as the
-                // Three.js WebGPU TSL demo
-                //   https://threejs.org/examples/#webgpu_tsl_compute_attractors_particles
-                // but built on WebGL2 + GPUComputationRenderer so it works
-                // in every modern browser, no WebGPU required. CPU per-frame
-                // cost drops from a ~32k-iteration JS for-loop to roughly
-                // zero — physics happens in parallel on however many GPU
-                // cores are available, which is why the WebGPU demo can run
-                // 1M particles without hiccupping.
-                // ──────────────────────────────────────────────────────────
-                const BH_Y = -0.4;
-                const EVENT_HORIZON = 0.32;
-                const R_OUT = 17.0;
-                const G = 0.65;
-
-                this._bhConst = { BH_Y, EVENT_HORIZON, R_OUT, G };
-
-                // Always build the starfield — it's cheap, lazy-populated,
-                // and looks fine even if the GPGPU path is unavailable.
-                this._buildStarfield();
-
-                // Try GPGPU first. If anything goes wrong (no WebGL2 float
-                // textures, GPUComputationRenderer module didn't load), fall
-                // through to the CPU implementation, which is slower but
-                // visually identical.
-                let gpgpuOk = false;
-                if (GPUComputationRenderer) {
-                    try {
-                        gpgpuOk = this._buildGPGPUParticles(BH_Y, EVENT_HORIZON, R_OUT, G);
-                    } catch (e) {
-                        console.warn('GPGPU cosmos init failed, falling back to CPU:', e);
-                        gpgpuOk = false;
-                    }
-                }
-                if (!gpgpuOk) {
-                    this._buildCPUParticles(BH_Y, EVENT_HORIZON, R_OUT, G);
-                }
-            }
-
-            // ─── GPGPU PATH ───────────────────────────────────────────────
-            // Single-shot init: fill float textures with Keplerian orbits,
-            // wire up the velocity+position fragment shaders, hand off to
-            // GPUComputationRenderer. Returns true on success.
-            _buildGPGPUParticles(BH_Y, EVENT_HORIZON, R_OUT, G) {
-                // Particle count = TEX_SIZE². 256² = 65k on desktop, 128² =
-                // 16k on mobile. GPU cost is roughly constant in N for what
-                // a modern GPU can handle, so we can afford to ~double the
-                // desktop count vs. the CPU version.
-                const TEX_SIZE = this.isMobile ? 128 : 256;
-                const N = TEX_SIZE * TEX_SIZE;
-
-                const gpuCompute = new GPUComputationRenderer(TEX_SIZE, TEX_SIZE, this.renderer);
-
-                // Some browsers / contexts need explicit Half / Float type
-                // negotiation. GPUComputationRenderer picks an appropriate
-                // type based on the renderer; we just check capabilities.
-                if (this.renderer.capabilities && this.renderer.capabilities.isWebGL2 === false) {
-                    // WebGL1 path: GPUComputationRenderer needs the
-                    // OES_texture_float extension. If it's not present, bail
-                    // out so the caller can fall back to the CPU path.
-                    const gl = this.renderer.getContext();
-                    if (!gl.getExtension('OES_texture_float')) return false;
-                }
-
-                const posTex = gpuCompute.createTexture();
-                const velTex = gpuCompute.createTexture();
-                const posData = posTex.image.data;
-                const velData = velTex.image.data;
-
-                // Initial Keplerian orbits. Random radius weighted toward
-                // small r so the disk is denser near the BH. tangential v ≈
-                // sqrt(G/r). Parity (i & 1) is stored in posTex.w so the
-                // jet direction is deterministic per-particle on the GPU.
-                for (let i = 0; i < N; i++) {
-                    const r = 0.55 + Math.pow(Math.random(), 2.4) * 12.5;
-                    const th = Math.random() * Math.PI * 2;
-                    const yJitter = (Math.random() - 0.5) * (0.025 + r * 0.025);
-                    const v = Math.sqrt(G / Math.max(r, 0.4));
-                    const radialKick = (Math.random() - 0.5) * v * 0.04;
-                    posData[i*4]     = r * Math.cos(th);
-                    posData[i*4 + 1] = BH_Y + yJitter;
-                    posData[i*4 + 2] = r * Math.sin(th);
-                    posData[i*4 + 3] = (i & 1) ? 1.0 : 0.0;  // parity → ±Y jet
-                    velData[i*4]     = -Math.sin(th) * v + Math.cos(th) * radialKick;
-                    velData[i*4 + 1] = 0;
-                    velData[i*4 + 2] =  Math.cos(th) * v + Math.sin(th) * radialKick;
-                    velData[i*4 + 3] = 0;
-                }
-
-                // Shared GLSL noise — deterministic per (uv, seed). Identical
-                // hash in velocity + position shaders ensures both pick the
-                // SAME ejection / respawn target for the same particle on
-                // the same frame.
-                const HASH = `
-                    float hash21(vec2 p) {
-                        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-                    }
-                `;
-
-                const velocityShader = `
-                    ${HASH}
-                    uniform float uDelta;
-                    uniform float uTime;
-                    uniform vec3  uBH;
-                    uniform float uG;
-                    uniform float uEH;
-                    uniform float uROut;
-                    uniform vec4  uAttractor;     // xyz pos, w = mass (0 = off)
-                    uniform float uAttractorSoft;
-                    uniform vec4  uBurst;         // xyz pos, w = radius (0 = off)
-                    uniform float uBurstStrength;
-
-                    void main() {
-                        vec2 uv = gl_FragCoord.xy / resolution.xy;
-                        vec4 posData = texture2D(texturePosition, uv);
-                        vec3 pos = posData.xyz;
-                        float parity = posData.w;
-                        vec3 vel = texture2D(textureVelocity, uv).xyz;
-
-                        vec3 r = pos - uBH;
-                        float r2 = dot(r, r);
-
-                        if (r2 < uEH * uEH) {
-                            // Bipolar jet — alternating ±Y by parity.
-                            float r1 = hash21(uv + vec2(uTime, 0.31));
-                            float r2_ = hash21(uv + vec2(0.73, uTime));
-                            float jetSign = (parity > 0.5) ? 1.0 : -1.0;
-                            float jetSpeed = 2.6 + r1 * 0.9;
-                            vel = vec3(
-                                (r1 - 0.5) * 0.35,
-                                jetSign * jetSpeed,
-                                (r2_ - 0.5) * 0.35
-                            );
-                        } else if (r2 > uROut * uROut) {
-                            // Outer rim Keplerian respawn.
-                            float r1 = hash21(uv + vec2(uTime + 1.0, 0.7));
-                            float r2_ = hash21(uv + vec2(0.3, uTime + 2.0));
-                            float rk = hash21(uv + vec2(uTime + 3.0, 0.5));
-                            float rNew = 10.0 + r1 * 6.0;
-                            float th = r2_ * 6.2831853;
-                            float vOrbit = sqrt(uG / rNew);
-                            float radKick = (rk - 0.5) * vOrbit * 0.04;
-                            vel = vec3(
-                                -sin(th) * vOrbit + cos(th) * radKick,
-                                0.0,
-                                 cos(th) * vOrbit + sin(th) * radKick
-                            );
-                        } else {
-                            // Newtonian gravity to BH.
-                            float inv = inversesqrt(r2 + 0.0025);
-                            vec3 acc = (-uG * inv * inv * inv) * r;
-
-                            // Cursor attractor (gentle, softened).
-                            if (uAttractor.w > 0.0) {
-                                vec3 ar = pos - uAttractor.xyz;
-                                float ar2 = dot(ar, ar);
-                                float aInv = inversesqrt(ar2 + uAttractorSoft);
-                                acc += (-uAttractor.w * aInv * aInv * aInv) * ar;
-                            }
-
-                            vel += acc * uDelta;
-
-                            // One-shot release burst (CPU clears w next frame).
-                            if (uBurst.w > 0.0) {
-                                vec3 br = pos - uBurst.xyz;
-                                float bd = length(br);
-                                if (bd < uBurst.w && bd > 0.001) {
-                                    float kick = uBurstStrength * (1.0 - bd / uBurst.w);
-                                    vel += (br / bd) * kick;
-                                }
-                            }
-                        }
-
-                        gl_FragColor = vec4(vel, 0.0);
-                    }
-                `;
-
-                const positionShader = `
-                    ${HASH}
-                    uniform float uDelta;
-                    uniform float uTime;
-                    uniform vec3  uBH;
-                    uniform float uG;
-                    uniform float uEH;
-                    uniform float uROut;
-
-                    void main() {
-                        vec2 uv = gl_FragCoord.xy / resolution.xy;
-                        vec4 posData = texture2D(texturePosition, uv);
-                        vec3 pos = posData.xyz;
-                        float parity = posData.w;
-                        vec3 vel = texture2D(textureVelocity, uv).xyz;
-
-                        vec3 r = pos - uBH;
-                        float r2 = dot(r, r);
-
-                        if (r2 < uEH * uEH) {
-                            // Place just outside the event horizon along the
-                            // polar axis. Uses different hash seeds than the
-                            // velocity shader's jet code so spread is
-                            // statistically independent from speed.
-                            float rLat = hash21(uv + vec2(uTime + 0.5, 0.11));
-                            float thLat = hash21(uv + vec2(0.91, uTime + 0.5));
-                            float jetSign = (parity > 0.5) ? 1.0 : -1.0;
-                            float latR = rLat * 0.06;
-                            float latTh = thLat * 6.2831853;
-                            pos = vec3(
-                                latR * cos(latTh),
-                                uBH.y + jetSign * (uEH + 0.025),
-                                latR * sin(latTh)
-                            );
-                        } else if (r2 > uROut * uROut) {
-                            // Rim respawn — MUST use same r/theta seeds as
-                            // velocity shader so position+velocity agree on
-                            // the new orbit.
-                            float r1 = hash21(uv + vec2(uTime + 1.0, 0.7));
-                            float r2_ = hash21(uv + vec2(0.3, uTime + 2.0));
-                            float yJ = hash21(uv + vec2(uTime + 4.0, 0.9));
-                            float rNew = 10.0 + r1 * 6.0;
-                            float th = r2_ * 6.2831853;
-                            float yJitter = (yJ - 0.5) * (0.025 + rNew * 0.025);
-                            pos = vec3(
-                                rNew * cos(th),
-                                uBH.y + yJitter,
-                                rNew * sin(th)
-                            );
-                        } else {
-                            pos += vel * uDelta;
-                        }
-
-                        gl_FragColor = vec4(pos, parity);
-                    }
-                `;
-
-                const velVar = gpuCompute.addVariable('textureVelocity', velocityShader, velTex);
-                const posVar = gpuCompute.addVariable('texturePosition', positionShader, posTex);
-                gpuCompute.setVariableDependencies(velVar, [posVar, velVar]);
-                gpuCompute.setVariableDependencies(posVar, [posVar, velVar]);
-
-                const velU = velVar.material.uniforms;
-                velU.uDelta          = { value: 0.016 };
-                velU.uTime           = { value: 0 };
-                velU.uBH             = { value: new THREE.Vector3(0, BH_Y, 0) };
-                velU.uG              = { value: G };
-                velU.uEH             = { value: EVENT_HORIZON };
-                velU.uROut           = { value: R_OUT };
-                velU.uAttractor      = { value: new THREE.Vector4(0, 0, 0, 0) };
-                velU.uAttractorSoft  = { value: 0.04 };
-                velU.uBurst          = { value: new THREE.Vector4(0, 0, 0, 0) };
-                velU.uBurstStrength  = { value: 1.8 };
-
-                const posU = posVar.material.uniforms;
-                posU.uDelta = { value: 0.016 };
-                posU.uTime  = { value: 0 };
-                posU.uBH    = { value: new THREE.Vector3(0, BH_Y, 0) };
-                posU.uG     = { value: G };
-                posU.uEH    = { value: EVENT_HORIZON };
-                posU.uROut  = { value: R_OUT };
-
-                const initErr = gpuCompute.init();
-                if (initErr) {
-                    console.warn('GPGPU init returned error:', initErr);
-                    return false;
-                }
-
-                // Build the Points geometry. Each vertex carries an `aRef`
-                // texture-coordinate so the vertex shader can read its own
-                // position out of the GPGPU texture. The `position`
-                // attribute is required by Three.js but unused (overwritten
-                // in the shader), so we hand it a tiny zero buffer.
-                const refAttr = new Float32Array(N * 2);
-                for (let i = 0; i < N; i++) {
-                    refAttr[i*2]     = ((i % TEX_SIZE) + 0.5) / TEX_SIZE;
-                    refAttr[i*2 + 1] = (Math.floor(i / TEX_SIZE) + 0.5) / TEX_SIZE;
-                }
-                const geom = new THREE.BufferGeometry();
-                geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
-                geom.setAttribute('aRef',     new THREE.BufferAttribute(refAttr, 2));
-                geom.setDrawRange(0, N);
-
-                const renderMat = new THREE.ShaderMaterial({
-                    uniforms: {
-                        uPixelRatio:      { value: this.pixelRatio },
-                        uBH:              { value: new THREE.Vector3(0, BH_Y, 0) },
-                        texturePosition:  { value: null },
-                        textureVelocity:  { value: null }
-                    },
-                    vertexShader: `
-                        attribute vec2 aRef;
-                        uniform sampler2D texturePosition;
-                        uniform sampler2D textureVelocity;
-                        uniform vec3 uBH;
-                        uniform float uPixelRatio;
-                        varying float vSpeed;
-                        varying float vDoppler;
-                        void main() {
-                            vec3 worldPos = texture2D(texturePosition, aRef).xyz;
-                            vec3 vel      = texture2D(textureVelocity, aRef).xyz;
-                            vSpeed = length(vel);
-                            vec3 r = worldPos - uBH;
-                            vec3 tan_  = normalize(vec3(-r.z, 0.0, r.x));
-                            vec3 toCam = normalize(cameraPosition - worldPos);
-                            vDoppler = clamp(0.55 + 1.1 * dot(tan_, toCam), 0.3, 2.1);
-                            vec4 mv = modelViewMatrix * vec4(worldPos, 1.0);
-                            gl_Position = projectionMatrix * mv;
-                            gl_PointSize = 1.0 * uPixelRatio * clamp(45.0 / -mv.z, 0.5, 2.2);
-                        }
-                    `,
-                    fragmentShader: `
-                        varying float vSpeed;
-                        varying float vDoppler;
-                        void main() {
-                            float d = length(gl_PointCoord - vec2(0.5));
-                            if (d > 0.5) discard;
-                            float a = smoothstep(0.5, 0.46, d);
-                            float t = clamp((vSpeed - 0.20) / 1.10, 0.0, 1.0);
-                            vec3 cool  = vec3(0.45, 0.70, 1.00);
-                            vec3 warm  = vec3(1.00, 0.78, 0.35);
-                            vec3 white = vec3(1.00, 0.96, 0.88);
-                            vec3 col = mix(cool, warm, t);
-                            col = mix(col, white, smoothstep(0.7, 1.0, t));
-                            gl_FragColor = vec4(col * vDoppler, a * 0.55);
-                        }
-                    `,
-                    transparent: true,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false
-                });
-
-                this.particleSim = new THREE.Points(geom, renderMat);
-                this.particleSim.frustumCulled = false;
-                this.scene.add(this.particleSim);
-
-                // No progressive init needed — the GPU populated all N
-                // particles in one texture upload. Reveal immediately.
-                this._gpgpu = { gpuCompute, posVar, velVar, renderMat, N, TEX_SIZE };
-                this._initializationComplete = true;
-                this._cosmosRevealed = true;
-                this.container.style.opacity = "1";
-                return true;
-            }
-
-            // ─── CPU FALLBACK ─────────────────────────────────────────────
-            // Used only when GPUComputationRenderer is unavailable (very old
-            // browsers without WebGL2 float textures). Same physics; runs in
-            // a JS for-loop. The slower path the user was originally seeing
-            // — kept here so old browsers still get *something*.
-            _buildCPUParticles(BH_Y, EVENT_HORIZON, R_OUT, G) {
-                const N = this.isMobile ? 16000 : 32000;
-                const positions  = new Float32Array(N * 3);
-                const velocities = new Float32Array(N * 3);
-                const speeds     = new Float32Array(N);
-
-                for (let i = 0; i < N; i++) {
-                    positions[i*3]   = 0;
-                    positions[i*3+1] = -10000;
-                    positions[i*3+2] = 0;
-                }
-
-                const initParticle = (i, r) => {
-                    const th = Math.random() * Math.PI * 2;
-                    const yJitter = (Math.random() - 0.5) * (0.025 + r * 0.025);
-                    positions[i*3]   = r * Math.cos(th);
-                    positions[i*3+1] = BH_Y + yJitter;
-                    positions[i*3+2] = r * Math.sin(th);
-                    const v = Math.sqrt(G / Math.max(r, 0.4));
-                    const radialKick = (Math.random() - 0.5) * v * 0.04;
-                    velocities[i*3]   = -Math.sin(th) * v + Math.cos(th) * radialKick;
-                    velocities[i*3+1] = 0;
-                    velocities[i*3+2] =  Math.cos(th) * v + Math.sin(th) * radialKick;
-                    speeds[i] = v;
-                };
-
-                this._initializationIndex = 0;
-                this._initializationComplete = false;
-
-                const geom = new THREE.BufferGeometry();
-                geom.setAttribute("position", new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
-                geom.setAttribute("aSpeed",   new THREE.BufferAttribute(speeds, 1).setUsage(THREE.DynamicDrawUsage));
-
-                const mat = new THREE.ShaderMaterial({
-                    uniforms: {
-                        uPixelRatio: { value: this.pixelRatio },
-                        uBH: { value: new THREE.Vector3(0, BH_Y, 0) }
-                    },
-                    vertexShader: `
-                        attribute float aSpeed;
-                        varying float vSpeed;
-                        varying float vDoppler;
-                        uniform vec3 uBH;
-                        uniform float uPixelRatio;
-                        void main() {
-                            vSpeed = aSpeed;
-                            vec3 r = position - uBH;
-                            vec3 tan_  = normalize(vec3(-r.z, 0.0, r.x));
-                            vec3 toCam = normalize(cameraPosition - position);
-                            vDoppler = clamp(0.55 + 1.1 * dot(tan_, toCam), 0.3, 2.1);
-                            vec4 mv = modelViewMatrix * vec4(position, 1.0);
-                            gl_Position = projectionMatrix * mv;
-                            gl_PointSize = 1.0 * uPixelRatio * clamp(45.0 / -mv.z, 0.5, 2.2);
-                        }
-                    `,
-                    fragmentShader: `
-                        varying float vSpeed;
-                        varying float vDoppler;
-                        void main() {
-                            float d = length(gl_PointCoord - vec2(0.5));
-                            if (d > 0.5) discard;
-                            float a = smoothstep(0.5, 0.46, d);
-                            float t = clamp((vSpeed - 0.20) / 1.10, 0.0, 1.0);
-                            vec3 cool  = vec3(0.45, 0.70, 1.00);
-                            vec3 warm  = vec3(1.00, 0.78, 0.35);
-                            vec3 white = vec3(1.00, 0.96, 0.88);
-                            vec3 col = mix(cool, warm, t);
-                            col = mix(col, white, smoothstep(0.7, 1.0, t));
-                            gl_FragColor = vec4(col * vDoppler, a * 0.55);
-                        }
-                    `,
-                    transparent: true,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false
-                });
-
-                this.particleSim = new THREE.Points(geom, mat);
-                this.scene.add(this.particleSim);
-
-                this._simState = {
-                    N, positions, velocities, speeds,
-                    posAttr: geom.attributes.position,
-                    speedAttr: geom.attributes.aSpeed,
-                    BH_Y, EVENT_HORIZON, G, R_OUT,
-                    initParticle
-                };
-
-                const initialChunk = this.isMobile ? 600 : 1500;
-                const stepChunk    = this.isMobile ? 1500 : 3500;
-                let nextChunk = initialChunk;
-                const progressiveInit = () => {
-                    const endIdx = Math.min(this._initializationIndex + nextChunk, N);
-                    for (let i = this._initializationIndex; i < endIdx; i++) {
-                        const r = 0.55 + Math.pow(Math.random(), 2.4) * 12.5;
-                        initParticle(i, r);
-                    }
-                    this._initializationIndex = endIdx;
-                    nextChunk = stepChunk;
-                    this._simState.posAttr.needsUpdate = true;
-                    this._simState.speedAttr.needsUpdate = true;
-                    if (!this._cosmosRevealed) {
-                        this._cosmosRevealed = true;
-                        this.container.style.opacity = "1";
-                    }
-                    if (this._initializationIndex < N) {
-                        requestAnimationFrame(progressiveInit);
-                    } else {
-                        this._initializationComplete = true;
-                    }
-                };
-                progressiveInit();
-            }
-
-            // ─── STARFIELD ────────────────────────────────────────────────
-            // Always built (cheap, lazy). Pure decoration — no physics.
-            _buildStarfield() {
-                const starfieldCount = this.isMobile ? 1500 : 3000;
-                const starfieldPositions = new Float32Array(starfieldCount * 3);
-                const starfieldColors    = new Float32Array(starfieldCount * 3);
-                const starfieldSizes     = new Float32Array(starfieldCount);
-                const starfieldSpeeds    = new Float32Array(starfieldCount);
-                const buildStarfieldData = () => {
-                    for (let i = 0; i < starfieldCount; i++) {
-                        const theta = Math.random() * Math.PI * 2;
-                        const phi = Math.acos(2.0 * Math.random() - 1.0);
-                        const dist = 28.0 + Math.random() * 16.0;
-                        starfieldPositions[i*3]   = dist * Math.sin(phi) * Math.cos(theta);
-                        starfieldPositions[i*3+1] = dist * Math.sin(phi) * Math.sin(theta) - 0.4;
-                        starfieldPositions[i*3+2] = dist * Math.cos(phi);
-                        const tint = Math.random();
-                        if (tint < 0.65) { starfieldColors[i*3]=1; starfieldColors[i*3+1]=1; starfieldColors[i*3+2]=1; }
-                        else if (tint < 0.85) { starfieldColors[i*3]=0.8; starfieldColors[i*3+1]=0.88; starfieldColors[i*3+2]=1.0; }
-                        else { starfieldColors[i*3]=1.0; starfieldColors[i*3+1]=0.92; starfieldColors[i*3+2]=0.78; }
-                        starfieldSizes[i]  = 0.30 + Math.random() * 0.55;
-                        starfieldSpeeds[i] = 0.6 + Math.random() * 2.4;
-                    }
-                };
-                const starfieldGeometry = new THREE.BufferGeometry();
-                starfieldGeometry.setAttribute('position', new THREE.BufferAttribute(starfieldPositions, 3));
-                starfieldGeometry.setAttribute('aColor',   new THREE.BufferAttribute(starfieldColors, 3));
-                starfieldGeometry.setAttribute('aSize',    new THREE.BufferAttribute(starfieldSizes, 1));
-                starfieldGeometry.setAttribute('aSpeed',   new THREE.BufferAttribute(starfieldSpeeds, 1));
-
-                this.starfieldMaterial = new THREE.ShaderMaterial({
-                    uniforms: { uTime: { value: 0.0 }, uPixelRatio: { value: this.pixelRatio } },
-                    vertexShader: `
-                        uniform float uTime;
-                        uniform float uPixelRatio;
-                        attribute float aSize;
-                        attribute float aSpeed;
-                        attribute vec3 aColor;
-                        varying vec3 vColor;
-                        varying float vOpacity;
-                        void main() {
-                            vColor = aColor;
-                            vOpacity = 0.35 + 0.65 * abs(sin(uTime * aSpeed + position.x));
-                            vec4 mv = modelViewMatrix * vec4(position, 1.0);
-                            gl_Position = projectionMatrix * mv;
-                            gl_PointSize = aSize * uPixelRatio * (38.0 / -mv.z);
-                        }
-                    `,
-                    fragmentShader: `
-                        varying vec3 vColor;
-                        varying float vOpacity;
-                        void main() {
-                            float d = length(gl_PointCoord - vec2(0.5));
-                            if (d > 0.5) discard;
-                            float a = smoothstep(0.5, 0.46, d);
-                            gl_FragColor = vec4(vColor, vOpacity * a * 0.85);
-                        }
-                    `,
-                    transparent: true,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false
-                });
-                this.starfieldPoints = new THREE.Points(starfieldGeometry, this.starfieldMaterial);
-                this.starfieldPoints.visible = false;
-                this.scene.add(this.starfieldPoints);
-
-                const populateStarfield = () => {
-                    buildStarfieldData();
-                    starfieldGeometry.attributes.position.needsUpdate = true;
-                    starfieldGeometry.attributes.aColor.needsUpdate = true;
-                    starfieldGeometry.attributes.aSize.needsUpdate = true;
-                    starfieldGeometry.attributes.aSpeed.needsUpdate = true;
-                    this.starfieldPoints.visible = true;
-                };
-                if (typeof requestIdleCallback === "function") {
-                    requestIdleCallback(populateStarfield, { timeout: 200 });
-                } else {
-                    setTimeout(populateStarfield, 0);
-                }
-            }
-
-            handleMouseMove(e) {
-                this.mouseX = (e.clientX - window.innerWidth / 2) / (window.innerWidth / 2);
-                this.mouseY = (e.clientY - window.innerHeight / 2) / (window.innerHeight / 2);
-                this._cursorEverMoved = true;
-            }
-        
-            handleScroll() {
-                if (!this.isLoaded) return;
-        
-                const sections = ['hero', 'about', 'projects', 'chat', 'timeline'];
-                const scrollY = window.scrollY;
-                const docHeight = document.documentElement.scrollHeight - window.innerHeight;
-                const scrollProgress = docHeight > 0 ? scrollY / docHeight : 0;
-        
-                // Linear interpolation between active keyframe sections based on scrollProgress
-                const segmentCount = sections.length - 1;
-                const progressSegment = scrollProgress * segmentCount;
-                const lowerIdx = Math.floor(progressSegment);
-                const upperIdx = Math.min(sections.length - 1, lowerIdx + 1);
-                const localProgress = progressSegment - lowerIdx;
-        
-                const keyframeLower = this.keyframes[sections[lowerIdx]];
-                const keyframeUpper = this.keyframes[sections[upperIdx]];
-        
-                this.targetPos.lerpVectors(keyframeLower.pos, keyframeUpper.pos, localProgress);
-                this.targetLook.lerpVectors(keyframeLower.lookAt, keyframeUpper.lookAt, localProgress);
-            }
-        
-            animate() {
-                requestAnimationFrame(() => this.animate());
-                if (!this.isLoaded) return;
-
-                const now = performance.now() * 0.001;
-                const dt = this._lastT ? Math.min(0.05, now - this._lastT) : 0.016;
-                this._lastT = now;
-
-                // Update shader-time uniforms.
-                if (this.starfieldMaterial) this.starfieldMaterial.uniforms.uTime.value = now;
-
-                // (No JS-side lerp on the cursor attractor any more —
-                // spawnClickBurst writes the world-space target directly
-                // onto the attractor object, and the gravity field itself
-                // produces the smooth curving trails. Direct-set feels
-                // snappier than the previous target/current lerp,
-                // especially during fast cursor sweeps.)
-
-                // ── Particle physics step ─────────────────────────────────
-                // Prefer the GPGPU path: just push uniforms and call
-                // compute(); the GPU runs N-body in parallel. Fall back to
-                // the JS loop when GPGPU isn't available (very old browsers).
-                if (this._gpgpu) {
-                    const g = this._gpgpu;
-                    const SUBSTEPS = this.isMobile ? 1 : 2;
-                    const h = Math.min(dt, 0.033) / SUBSTEPS;
-                    const velU = g.velVar.material.uniforms;
-                    const posU = g.posVar.material.uniforms;
-                    velU.uDelta.value = h;
-                    posU.uDelta.value = h;
-
-                    // Attractor uniform: w = mass when active, 0 when not.
-                    if (this._attractor) {
-                        velU.uAttractor.value.set(
-                            this._attractor.x,
-                            this._attractor.y,
-                            this._attractor.z,
-                            this._attractor.mass
-                        );
-                    } else {
-                        velU.uAttractor.value.w = 0.0;
-                    }
-
-                    // One-shot release burst — set this frame, cleared next.
-                    if (this._pendingBurst) {
-                        velU.uBurst.value.set(
-                            this._pendingBurst.x,
-                            this._pendingBurst.y,
-                            this._pendingBurst.z,
-                            this._pendingBurst.w
-                        );
-                        this._pendingBurst = null;
-                        this._burstActive = true;
-                    } else if (this._burstActive) {
-                        velU.uBurst.value.w = 0.0;
-                        this._burstActive = false;
-                    }
-
-                    // Advance simulation. Each compute() call writes new
-                    // velocity then new position into the ping-pong targets.
-                    for (let step = 0; step < SUBSTEPS; step++) {
-                        // Bump uTime per substep so the in-shader hashes
-                        // produce distinct random values if a particle
-                        // re-enters the same boundary multiple times in one
-                        // frame (otherwise it would always land in the same
-                        // respawn slot).
-                        velU.uTime.value = now + step * 0.001;
-                        posU.uTime.value = now + step * 0.001;
-                        g.gpuCompute.compute();
-                    }
-
-                    // Point the render material at the latest texture pair.
-                    g.renderMat.uniforms.texturePosition.value =
-                        g.gpuCompute.getCurrentRenderTarget(g.posVar).texture;
-                    g.renderMat.uniforms.textureVelocity.value =
-                        g.gpuCompute.getCurrentRenderTarget(g.velVar).texture;
-
-                    // First compute finished — unblock downstream loaders
-                    // (galaxy + Gemma embedder) that were waiting on cosmos.
-                    if (window._resolveCosmosReady) {
-                        const r = window._resolveCosmosReady;
-                        window._resolveCosmosReady = null;
-                        r();
-                    }
-                } else if (this._simState) {
-                    // CPU fallback (legacy path). Per-particle JS loop with
-                    // semi-implicit Euler integration. Slow but correct.
-                    const s = this._simState;
-                    const SUBSTEPS = this.isMobile ? 1 : 2;
-                    const h = Math.min(dt, 0.033) / SUBSTEPS;
-                    const G = s.G;
-                    const EH2 = s.EVENT_HORIZON * s.EVENT_HORIZON;
-                    const ROUT2 = s.R_OUT * s.R_OUT;
-                    const pos = s.positions, vel = s.velocities, spd = s.speeds;
-                    const BHy = s.BH_Y;
-                    const activeN = this._initializationComplete ? s.N : this._initializationIndex;
-
-                    for (let step = 0; step < SUBSTEPS; step++) {
-                        for (let i = 0; i < activeN; i++) {
-                            const rx = pos[i*3];
-                            const ry = pos[i*3 + 1] - BHy;
-                            const rz = pos[i*3 + 2];
-                            const r2 = rx*rx + ry*ry + rz*rz;
-
-                            if (r2 < EH2) {
-                                const jetSign = (i & 1) ? 1 : -1;
-                                const latR  = Math.random() * 0.06;
-                                const latTh = Math.random() * Math.PI * 2;
-                                pos[i*3]     = latR * Math.cos(latTh);
-                                pos[i*3 + 1] = BHy + jetSign * (s.EVENT_HORIZON + 0.025);
-                                pos[i*3 + 2] = latR * Math.sin(latTh);
-                                const jetSpeed = 2.6 + Math.random() * 0.9;
-                                vel[i*3]     = (Math.random() - 0.5) * 0.35;
-                                vel[i*3 + 1] = jetSign * jetSpeed;
-                                vel[i*3 + 2] = (Math.random() - 0.5) * 0.35;
-                                spd[i] = jetSpeed;
-                                continue;
-                            }
-                            if (r2 > ROUT2) {
-                                s.initParticle(i, 10.0 + Math.random() * 6.0);
-                                continue;
-                            }
-
-                            const inv = 1.0 / Math.sqrt(r2 + 0.0025);
-                            const aScalar = -G * inv * inv * inv;
-                            let ax = aScalar * rx;
-                            let ay = aScalar * ry;
-                            let az = aScalar * rz;
-
-                            if (this._attractor) {
-                                const atx = pos[i*3]     - this._attractor.x;
-                                const aty = pos[i*3 + 1] - this._attractor.y;
-                                const atz = pos[i*3 + 2] - this._attractor.z;
-                                const atR2 = atx*atx + aty*aty + atz*atz;
-                                if (atR2 > 1e-4) {
-                                    const atInv = 1.0 / Math.sqrt(atR2 + this._attractor.softening);
-                                    const atAScalar = -this._attractor.mass * atInv * atInv * atInv;
-                                    ax += atAScalar * atx;
-                                    ay += atAScalar * aty;
-                                    az += atAScalar * atz;
-                                }
-                            }
-
-                            vel[i*3]     += ax * h;
-                            vel[i*3 + 1] += ay * h;
-                            vel[i*3 + 2] += az * h;
-                            pos[i*3]     += vel[i*3]     * h;
-                            pos[i*3 + 1] += vel[i*3 + 1] * h;
-                            pos[i*3 + 2] += vel[i*3 + 2] * h;
-                        }
-                    }
-                    for (let i = 0; i < activeN; i++) {
-                        const vx = vel[i*3], vy = vel[i*3+1], vz = vel[i*3+2];
-                        spd[i] = Math.sqrt(vx*vx + vy*vy + vz*vz);
-                    }
-                    s.posAttr.needsUpdate = true;
-                    s.speedAttr.needsUpdate = true;
-
-                    // CPU-fallback parity: same ready signal as the GPGPU path
-                    // so downstream loaders can fire either way.
-                    if (window._resolveCosmosReady) {
-                        const r = window._resolveCosmosReady;
-                        window._resolveCosmosReady = null;
-                        r();
-                    }
-                }
-
-                // (Click ripple lives inside the same particle pool now —
-                // see spawnClickBurst() — so there's no separate spark
-                // simulation to advance here.)
-
-                // Smooth parallax offset based on cursor position
-                const parallaxX = this.mouseX * 0.4;
+            _animate() {
+                // Smooth parallax from mouse position; pairs with scroll
+                // keyframes for the small head-movement feel.
+                const parallaxX =  this.mouseX * 0.4;
                 const parallaxY = -this.mouseY * 0.25;
-        
                 this.camera.position.x += (this.targetPos.x + parallaxX - this.camera.position.x) * 0.05;
                 this.camera.position.y += (this.targetPos.y + parallaxY - this.camera.position.y) * 0.05;
-                this.camera.position.z += (this.targetPos.z - this.camera.position.z) * 0.05;
-        
+                this.camera.position.z += (this.targetPos.z              - this.camera.position.z) * 0.05;
                 this.currentLookAt.lerp(this.targetLook, 0.05);
                 this.camera.lookAt(this.currentLookAt);
-        
+
+                this.renderer.compute(this.updateCompute);
                 this.renderer.render(this.scene, this.camera);
+
+                if (window._resolveCosmosReady) {
+                    const r = window._resolveCosmosReady;
+                    window._resolveCosmosReady = null;
+                    r();
+                }
+            }
+
+            _handleScroll() {
+                if (!this.keyframes) return;
+                const sections = ['hero', 'about', 'projects', 'chat', 'timeline'];
+                const scrollY = window.scrollY;
+                const docH = document.documentElement.scrollHeight - window.innerHeight;
+                const progress = docH > 0 ? scrollY / docH : 0;
+
+                const segCount = sections.length - 1;
+                const progSeg  = progress * segCount;
+                const lowerIdx = Math.floor(progSeg);
+                const upperIdx = Math.min(sections.length - 1, lowerIdx + 1);
+                const t        = progSeg - lowerIdx;
+
+                const a = this.keyframes[sections[lowerIdx]];
+                const b = this.keyframes[sections[upperIdx]];
+
+                this.targetPos.lerpVectors(a.pos, b.pos, t);
+                this.targetLook.lerpVectors(a.lookAt, b.lookAt, t);
+            }
+
+            _handleMouseMove(e) {
+                this.mouseX = (e.clientX - window.innerWidth / 2)  / (window.innerWidth  / 2);
+                this.mouseY = (e.clientY - window.innerHeight / 2) / (window.innerHeight / 2);
+            }
+
+            _handleResize() {
+                if (!this.renderer || !this.camera) return;
+                const w = this.container.clientWidth;
+                const h = this.container.clientHeight;
+                this.camera.aspect = w / h;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(w, h);
             }
         }
         
