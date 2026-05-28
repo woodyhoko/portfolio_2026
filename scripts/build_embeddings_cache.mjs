@@ -177,8 +177,14 @@ async function main() {
         .map(k => `  ${JSON.stringify(k)}: ${JSON.stringify(out[k])}`)
         .join(',\n') + '\n}\n';
     await writeFile(outPath, json, 'utf8');
+    
+    // Write JS version to support local file:// access without CORS errors
+    const jsPath = resolve(projectRoot, 'embeddings_cache.js');
+    const jsContent = 'window._shippedEmbeddingsCacheData = ' + json + ';';
+    await writeFile(jsPath, jsContent, 'utf8');
+    
     const sz = (await stat(outPath)).size;
-    console.log(`[build] wrote ${Object.keys(out).length} entries to embeddings_cache.json (${(sz/1024).toFixed(1)} KB)`);
+    console.log(`[build] wrote ${Object.keys(out).length} entries to embeddings_cache.json and .js (${(sz/1024).toFixed(1)} KB)`);
 }
 
 main().catch(err => {

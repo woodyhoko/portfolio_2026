@@ -2140,6 +2140,7 @@
          are populated by the time loadData() reads them. -->
     <script defer src="./projects.js"></script>
     <script defer src="./experiences.js"></script>
+    <script defer src="./embeddings_cache.js"></script>
 
     <!-- Combined Scripts Module -->
     <script type="module">
@@ -2895,10 +2896,15 @@
         // so the very first visit doesn't have to download the ~150 MB
         // Gemma model or run any forward passes. Edits or new docs that
         // aren't in this file fall through to IndexedDB and then to
-        // live Gemma compute.
+        // We load it via `<script>` instead of `fetch` so it works even if the 
+        // user opens the file locally without a server (file:/// protocol).
         window._shippedEmbeddingsCache = null;
         async function loadShippedEmbeddings() {
             if (window._shippedEmbeddingsCache) return window._shippedEmbeddingsCache;
+            if (window._shippedEmbeddingsCacheData) {
+                window._shippedEmbeddingsCache = window._shippedEmbeddingsCacheData;
+                return window._shippedEmbeddingsCache;
+            }
             try {
                 const resp = await fetch('./embeddings_cache.json', { cache: 'force-cache' });
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -3203,6 +3209,16 @@
                 } else {
                     setTimeout(renderNow, 0);
                 }
+
+                // Lazy load the Gemma embedder only when the user clicks the search field,
+                // yielding to the browser first to avoid dropping frames on the initial focus.
+                this.searchInput.addEventListener("focus", () => {
+                    if (!window.gemmaPipeline) {
+                        setTimeout(() => {
+                            initGemmaEmbedder().catch(err => console.error('[Embeddings] Gemma load failed:', err));
+                        }, 50);
+                    }
+                }, { once: true });
 
                 this.searchInput.addEventListener("input", () => {
                     this.filterProjects();
@@ -5645,28 +5661,12 @@
 
                 const T = WEBGPU;
                 const {
-                    Fn, If, PI, color, cos, sin, float, instanceIndex, Loop, mix,
-                    instancedArray, uint, uniform, uniformArray, hash, vec3, vec4
+                    Fn, If, PI, color, cos, sin, float, instanceIndex, Loop, mix, mod,
+                    instancedArray, uint, uniform, uniformArray, hash, vec3, vec4, uv
                 } = TSL;
 
-                // ── Physics constants ────────────────────────────────────
-                // Binary black-hole system. Both BHs orbit a common
-                // centre of mass at y = BH_Y, separated by BH_SEP * 2.
-                // Each carries the full G mass — particles feel the
-                // sum of both gravity wells, which makes circumbinary
-                // orbits naturally chaotic and produces the wandering
-                // accretion-disk look.
-                const BH_Y          = -0.4;
-                const BH_SEP        = 0.7;          // each BH this far from centre
-                const EVENT_HORIZON = 0.18;         // smaller than before — denser core, less merging visual
-                const R_OUT         = 16.0;
-                const G_CONST       = 0.4;          // halved from 0.65 since there are two of them now
-                const BH_ORBIT_RATE = 0.00021;      // ~ 30 s per orbit; slow & elegant
-
-                // Smaller pool, smaller sprites: 65k particles on
-                // desktop / 16k on mobile reads as a "cloud of dust"
-                // rather than "wall of blocks".
-                const COUNT = this.isMobile ? Math.pow(2, 14) : Math.pow(2, 17);
+                this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
+                const COUNT = this.isMobile ? Math.pow(2, 15) : Math.pow(2, 17);
 
                 // ── Camera + scene ───────────────────────────────────────
                 this.camera = new T.PerspectiveCamera(
@@ -5675,22 +5675,25 @@
                     0.1,
                     100
                 );
-                this.camera.position.set(0, 1.5, 4);
+                
+                const zOffset = this.isMobile ? 3 : 0; // Zoom out slightly on mobile
+                this.camera.position.set(0, 1.5, 4 + zOffset);
 
                 this.keyframes = {
-                    'hero':     { pos: new T.Vector3(0,    1.5, 4),   lookAt: new T.Vector3(0, 0,   0) },
-                    'about':    { pos: new T.Vector3(-2,   1,   3.5), lookAt: new T.Vector3(0, 0.5, 0) },
-                    'projects': { pos: new T.Vector3(2,    0.7, 2.5), lookAt: new T.Vector3(0, 0.2, 0) },
-                    'chat':     { pos: new T.Vector3(0,    2.5, 3.5), lookAt: new T.Vector3(0, 0.5, 0) },
-                    'timeline': { pos: new T.Vector3(-1.8, 1.8, 3.2), lookAt: new T.Vector3(0, 0.3, 0) }
+                    'hero':     { pos: new T.Vector3(0,    1.5, 4 + zOffset),   lookAt: new T.Vector3(0, 0,   0) },
+                    'about':    { pos: new T.Vector3(-2,   1,   3.5 + zOffset), lookAt: new T.Vector3(0, 0.5, 0) },
+                    'projects': { pos: new T.Vector3(2,    0.7, 2.5 + zOffset), lookAt: new T.Vector3(0, 0.2, 0) },
+                    'chat':     { pos: new T.Vector3(0,    2.5, 3.5 + zOffset), lookAt: new T.Vector3(0, 0.5, 0) },
+                    'timeline': { pos: new T.Vector3(-1.8, 1.8, 3.2 + zOffset), lookAt: new T.Vector3(0, 0.3, 0) }
                 };
                 this.targetPos     = this.keyframes.hero.pos.clone();
                 this.targetLook    = this.keyframes.hero.lookAt.clone();
                 this.currentLookAt = this.keyframes.hero.lookAt.clone();
+                this.scrollProgress = 0;
 
                 this.scene = new T.Scene();
 
-                // ── Renderer (opaque so no per-frame alpha-blend) ────────
+                // ── Renderer ─────────────────────────────────────────────
                 this.renderer = new T.WebGPURenderer({ antialias: true, alpha: false });
                 this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
                 this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
@@ -5699,337 +5702,212 @@
                 this.container.innerHTML = '';
                 this.container.appendChild(this.renderer.domElement);
 
-                // ── Uniforms ─────────────────────────────────────────────
-                // Faster overall motion (timeScale 0.55 → 0.95, maxSpeed
-                // 5.5 → 7.5), much smaller sprites (0.014 → 0.0058) so
-                // particles read as elegant pinpricks rather than blocks.
-                const timeScale  = uniform(0.95);
-                const maxSpeed   = uniform(7.5);
-                const scaleU     = uniform(0.0058);
+                // ── Cursor Interaction ───────────────────────────────────
+                this._uCursor = uniform(vec4(0, 0, 0, 0));
+                
+                const raycaster = new T.Raycaster();
+                const pointer = new T.Vector2();
+                const plane = new T.Plane(new T.Vector3(0, 0, 1), 0);
+                const target = new T.Vector3();
+                let isDragging = false;
 
-                // Warmer palette: deep magenta → red-orange → warm cream,
-                // with a contrasting cool cyan for the bipolar jets so the
-                // outflow visibly separates from the disk swirl.
-                const colorCool  = uniform(color('#5a0c2e'));        // deep magenta (outer halo / slow)
-                const colorWarm  = uniform(color('#ff5a2a'));        // red-orange (inner disk)
-                const colorHot   = uniform(color('#fff0c0'));        // warm cream (hot inner core)
-                const colorJet   = uniform(color('#6ad8ff'));        // cool cyan (polar jets)
+                const onPointerMove = (e) => {
+                    if (!isDragging) return;
+                    pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+                    pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(pointer, this.camera);
+                    raycaster.ray.intersectPlane(plane, target);
+                    this._uCursor.value.set(target.x, target.y, target.z, 1);
+                };
 
-                const bhY        = uniform(float(BH_Y));
-                const bhEH       = uniform(float(EVENT_HORIZON));
-                const bhEH2      = uniform(float(EVENT_HORIZON * EVENT_HORIZON));
-                const bhROUT2    = uniform(float(R_OUT * R_OUT));
-                const bhG        = uniform(float(G_CONST));
+                window.addEventListener('pointerdown', (e) => {
+                    // Ignore clicks on UI layers
+                    if (e.target.closest('#projects-grid, #project-modal, #project-search, nav, #header-links, #bottom-links, .chatbot-container')) return;
+                    isDragging = true;
+                    onPointerMove(e);
+                });
+                window.addEventListener('pointerup', () => {
+                    isDragging = false;
+                    this._uCursor.value.w = 0;
+                });
+                window.addEventListener('pointermove', onPointerMove);
 
-                // Two BH position uniforms — JS updates them every frame
-                // so the binary orbits its centre of mass. Compute Fn
-                // sums gravity from both.
-                const bhA        = uniform(new T.Vector3( BH_SEP, BH_Y, 0));
-                const bhB        = uniform(new T.Vector3(-BH_SEP, BH_Y, 0));
-                this._uBhA       = bhA;
-                this._uBhB       = bhB;
-                this._bhConst    = { BH_Y, BH_SEP, EVENT_HORIZON, ORBIT_RATE: BH_ORBIT_RATE };
+                // ── Attractors Setup ──────────────────────────────────────
+                this.attractorsPositions = uniformArray([
+                    new T.Vector3(-1.5, 0, 0),
+                    new T.Vector3(1.5, 0, -0.5),
+                    new T.Vector3(0, 0.8, 1.5)
+                ]);
+                this.attractorsRotationAxes = uniformArray([
+                    new T.Vector3(0, 1, 0),
+                    new T.Vector3(0, 1, 0),
+                    new T.Vector3(1, 0, -0.5).normalize()
+                ]);
+                const attractorsLength = uniform(this.attractorsPositions.array.length, 'uint');
 
-                const cursorU    = uniform(new T.Vector4(0, BH_Y, 0, 0));  // xyz pos, w = strength (0 = off)
-                this._uCursor    = cursorU;
+                // ── Particles Setup ───────────────────────────────────────
+                const attractorMass = uniform(Number(`1e7`));
+                const particleGlobalMass = uniform(Number(`1e4`));
+                const timeScale = uniform(1.2);
+                const spinningStrength = uniform(2.75);
+                const maxSpeed = uniform(8);
+                const gravityConstant = 6.67e-11;
+                const velocityDamping = uniform(0.1);
+                const scale = uniform(this.isMobile ? 0.016 : 0.008);
+                const boundHalfExtent = uniform(8);
+                
+                // Color palette matching the portfolio neon theme
+                const colorA = uniform(color('#00f0ff')); // Neon Cyan
+                const colorB = uniform(color('#ff007f')); // Neon Pink
 
-                // Per-particle storage buffers.
                 const positionBuffer = instancedArray(COUNT, 'vec3');
                 const velocityBuffer = instancedArray(COUNT, 'vec3');
 
-                // Per-particle mass jitter (used for size variation).
-                const massMul = hash(instanceIndex.add(uint(73108)))
-                    .remap(0.4, 1).toVar();
-
-                // ── Init compute (Keplerian accretion disk + halo) ───────
-                // 80 % of particles seed a thin flat disk in the XZ
-                // plane (yJitter <~ 0.04 + r·0.02 — much flatter than
-                // before). The remaining 20 % spawn in a thicker
-                // spherical halo so the cloud has some out-of-plane
-                // dust around the disk.
-                const initFn = Fn(() => {
-                    const idx = instanceIndex;
-
-                    const r = float(0.6).add(hash(idx.add(uint(0x100))).pow(2.4).mul(12));
-                    const theta = hash(idx.add(uint(0x200))).mul(PI).mul(2);
-
-                    // 1 if particle is "halo" (~20%), 0 if "disk" (~80%).
-                    const haloPick = hash(idx.add(uint(0x180))).step(0.8);
-                    const haloJit  = hash(idx.add(uint(0x300))).sub(0.5).mul(float(0.6).add(r.mul(0.18)));
-                    const diskJit  = hash(idx.add(uint(0x301))).sub(0.5).mul(float(0.03).add(r.mul(0.02)));
-                    const yJit     = mix(diskJit, haloJit, haloPick);
-
-                    positionBuffer.element(idx).assign(vec3(
-                        r.mul(cos(theta)),
-                        bhY.add(yJit),
-                        r.mul(sin(theta))
-                    ));
-
-                    // Tangential velocity for a circular orbit around the
-                    // *combined* binary mass: v ≈ sqrt(2·G / r). Halo
-                    // particles get a small vertical kick so they don't
-                    // collapse straight into the disk.
-                    const vMag = bhG.mul(2).div(r.max(0.4)).sqrt();
-                    const radial = hash(idx.add(uint(0x400))).sub(0.5).mul(vMag).mul(0.04);
-                    const haloVy = haloPick.mul(hash(idx.add(uint(0x401))).sub(0.5)).mul(vMag).mul(0.3);
-                    velocityBuffer.element(idx).assign(vec3(
-                        sin(theta).negate().mul(vMag).add(cos(theta).mul(radial)),
-                        haloVy,
-                        cos(theta).mul(vMag).add(sin(theta).mul(radial))
-                    ));
+                const sphericalToVec3 = Fn(([phi, theta]) => {
+                    const sinPhiRadius = sin(phi);
+                    return vec3(
+                        sinPhiRadius.mul(sin(theta)),
+                        cos(phi),
+                        sinPhiRadius.mul(cos(theta))
+                    );
                 });
+
+                // Init compute
+                const initFn = Fn(() => {
+                    const position = positionBuffer.element(instanceIndex);
+                    const velocity = velocityBuffer.element(instanceIndex);
+
+                    const basePosition = vec3(
+                        hash(instanceIndex.add(uint(Math.random() * 0xffffff))),
+                        hash(instanceIndex.add(uint(Math.random() * 0xffffff))),
+                        hash(instanceIndex.add(uint(Math.random() * 0xffffff)))
+                    ).sub(0.5).mul(vec3(5, 0.2, 5));
+                    position.assign(basePosition);
+
+                    const phi = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).mul(PI).mul(2);
+                    const theta = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).mul(PI);
+                    const baseVelocity = sphericalToVec3(phi, theta).mul(0.05);
+                    velocity.assign(baseVelocity);
+                });
+
                 const initCompute = initFn().compute(COUNT);
                 await this.renderer.computeAsync(initCompute);
 
-                // ── Per-frame update compute (binary BH) ─────────────────
-                // Each frame: check both event horizons → eject from the
-                // closer BH as a bipolar jet; check outer rim (distance
-                // from system centre) → respawn into a fresh
-                // circumbinary Keplerian orbit; otherwise sum gravity
-                // from both BHs (plus the optional cursor attractor)
-                // and integrate.
-                //
-                // TSL note: storage-element nodes (positionBuffer.element)
-                // don't reliably expose component swizzles (.x/.y/.z) in
-                // r172, so all derived vectors use vec3 arithmetic
-                // (sub / add) instead of component access.
-                const centerOffset = vec3(float(0), bhY, float(0));
+                // Update compute
+                const particleMassMultiplier = hash(instanceIndex.add(uint(Math.random() * 0xffffff))).remap(0.25, 1).toVar();
+                const particleMass = particleMassMultiplier.mul(particleGlobalMass).toVar();
+
                 const updateFn = Fn(() => {
-                    const idx = instanceIndex;
-                    const delta = float(1 / 60).mul(timeScale);
-                    const position = positionBuffer.element(idx);
-                    const velocity = velocityBuffer.element(idx);
+                    const delta = float(1 / 60).mul(timeScale).toVar();
+                    const position = positionBuffer.element(instanceIndex);
+                    const velocity = velocityBuffer.element(instanceIndex);
 
-                    const toA = bhA.sub(position);
-                    const r2A = toA.dot(toA);
-                    const toB = bhB.sub(position);
-                    const r2B = toB.dot(toB);
+                    const force = vec3(0).toVar();
 
-                    const fromCenter = position.sub(centerOffset);
-                    const r2C = fromCenter.dot(fromCenter);
+                    Loop(attractorsLength, ({ i }) => {
+                        const attractorPosition = this.attractorsPositions.element(i);
+                        const attractorRotationAxis = this.attractorsRotationAxes.element(i);
+                        const toAttractor = attractorPosition.sub(position);
+                        const distance = toAttractor.length();
+                        const direction = toAttractor.normalize();
 
-                    // Per-particle jet parity + speed — shared between
-                    // both ejection branches so they look like one
-                    // continuous bipolar flow.
-                    const parity   = hash(idx.add(uint(0xa11ce))).step(0.5);
-                    const jetSign  = parity.mul(2.0).sub(1.0);
-                    const jetSpeed = float(3.0).add(hash(idx.add(uint(0xb0b))).mul(1.2));
-                    const jetOffsetY = jetSign.mul(float(EVENT_HORIZON + 0.04));
-                    const jetOffset = vec3(
-                        hash(idx.add(uint(0xe3e))).sub(0.5).mul(0.04),
-                        jetOffsetY,
-                        hash(idx.add(uint(0xf4f))).sub(0.5).mul(0.04)
-                    );
-                    const jetVel = vec3(
-                        hash(idx.add(uint(0xc1c))).sub(0.5).mul(0.18),
-                        jetSign.mul(jetSpeed),
-                        hash(idx.add(uint(0xd2d))).sub(0.5).mul(0.18)
-                    );
+                        // Gravity
+                        const gravityStrength = attractorMass.mul(particleMass).mul(gravityConstant).div(distance.pow(2)).toVar();
+                        const gravityForce = direction.mul(gravityStrength);
+                        force.addAssign(gravityForce);
 
-                    If(r2A.lessThan(bhEH2), () => {
-                        position.assign(bhA.add(jetOffset));
-                        velocity.assign(jetVel);
-                    }).ElseIf(r2B.lessThan(bhEH2), () => {
-                        position.assign(bhB.add(jetOffset));
-                        velocity.assign(jetVel);
-                    }).ElseIf(r2C.greaterThan(bhROUT2), () => {
-                        // ── Outer-rim escape: fresh circumbinary orbit ──
-                        const r  = float(9.0).add(hash(idx.add(uint(0x5050))).mul(6));
-                        const th = hash(idx.add(uint(0x6060))).mul(PI).mul(2);
-                        const v  = bhG.mul(2).div(r).sqrt();
-                        position.assign(vec3(
-                            r.mul(cos(th)),
-                            bhY.add(hash(idx.add(uint(0x7070))).sub(0.5).mul(0.05)),
-                            r.mul(sin(th))
-                        ));
-                        velocity.assign(vec3(
-                            sin(th).negate().mul(v),
-                            float(0),
-                            cos(th).mul(v)
-                        ));
-                    }).Else(() => {
-                        // ── Normal step: gravity from BOTH BHs + cursor ──
-                        const invA = float(1.0).div(r2A.add(0.0025).sqrt());
-                        const sA   = bhG.mul(invA).mul(invA).mul(invA);
-                        const invB = float(1.0).div(r2B.add(0.0025).sqrt());
-                        const sB   = bhG.mul(invB).mul(invB).mul(invB);
-                        const acc  = toA.mul(sA).add(toB.mul(sB)).toVar();
-
-                        // Cursor attractor (gated on cursorU.w > 0).
-                        If(cursorU.w.greaterThan(float(0.0)), () => {
-                            const toC  = cursorU.xyz.sub(position);
-                            const cInv = float(1.0).div(toC.dot(toC).add(0.04).sqrt());
-                            const cS   = cursorU.w.mul(float(0.32))
-                                .mul(cInv).mul(cInv).mul(cInv);
-                            acc.addAssign(toC.mul(cS));
-                        });
-
-                        velocity.addAssign(acc.mul(delta));
-
-                        // Velocity clamp keeps close passes stable.
-                        const spd = velocity.length();
-                        If(spd.greaterThan(maxSpeed), () => {
-                            velocity.assign(velocity.normalize().mul(maxSpeed));
-                        });
-
-                        position.addAssign(velocity.mul(delta));
+                        // Spinning
+                        const spinningForce = attractorRotationAxis.mul(gravityStrength).mul(spinningStrength);
+                        const spinningVelocity = spinningForce.cross(toAttractor);
+                        force.addAssign(spinningVelocity);
                     });
+
+                    // Cursor Gravity
+                    If(this._uCursor.w.greaterThan(0.5), () => {
+                        const toCursor = this._uCursor.xyz.sub(position);
+                        const cursorDistance = toCursor.length();
+                        const cursorDirection = toCursor.normalize();
+                        
+                        // Slightly stronger gravity than regular attractors
+                        const cursorGravityStrength = attractorMass.mul(particleMass).mul(gravityConstant).mul(1.5).div(cursorDistance.pow(2)).toVar();
+                        const cursorForce = cursorDirection.mul(cursorGravityStrength);
+                        force.addAssign(cursorForce);
+                        
+                        // Extra spinning around cursor
+                        const spinAxis = vec3(0, 0, 1);
+                        const spinningForce = spinAxis.mul(cursorGravityStrength).mul(spinningStrength);
+                        const spinningVelocity = spinningForce.cross(toCursor);
+                        force.addAssign(spinningVelocity);
+                    });
+
+                    // Velocity
+                    velocity.addAssign(force.mul(delta));
+                    const speed = velocity.length();
+                    If(speed.greaterThan(maxSpeed), () => {
+                        velocity.assign(velocity.normalize().mul(maxSpeed));
+                    });
+                    velocity.mulAssign(velocityDamping.oneMinus());
+
+                    // Position
+                    position.addAssign(velocity.mul(delta));
+
+                    // Box loop
+                    const halfHalfExtent = boundHalfExtent.div(2).toVar();
+                    position.assign(mod(position.add(halfHalfExtent), boundHalfExtent).sub(halfHalfExtent));
                 });
                 this.updateCompute = updateFn().compute(COUNT);
 
-                // ── Render material (sprite, additive, speed-tinted) ─────
-                // depthTest stays on (the default) so the opaque BH
-                // meshes below can occlude particles behind them.
-                const material = new T.SpriteNodeMaterial({
-                    blending:    T.AdditiveBlending,
-                    depthWrite:  false,
-                    transparent: true
-                });
-
+                // ── Material & Mesh ──────────────────────────────────────
+                const material = new T.SpriteNodeMaterial({ blending: T.AdditiveBlending, depthWrite: false, transparent: true });
                 material.positionNode = positionBuffer.toAttribute();
                 material.colorNode = Fn(() => {
-                    const v = velocityBuffer.toAttribute();
-                    const speed = v.length();
-
-                    // Warmer speed-based ramp:
-                    // deep magenta (slow outer halo) → red-orange (disk)
-                    //   → warm cream (hot inner core)
-                    const t   = speed.div(maxSpeed).smoothstep(0.0, 0.5);
-                    const tHi = speed.div(maxSpeed).smoothstep(0.72, 1.0);
-                    let col = mix(colorCool, colorWarm, t);
-                    col = mix(col, colorHot, tHi);
-
-                    // Particles with mostly vertical velocity are in the
-                    // bipolar jet — tint cool cyan for clean contrast
-                    // against the warm disk. |v.y| via dot product to
-                    // avoid attribute-swizzle issues with some TSL
-                    // versions.
-                    const verticalMag = v.dot(vec3(float(0), float(1), float(0))).abs();
-                    const verticalFrac = verticalMag.div(speed.add(0.001));
-                    const jetMix = verticalFrac.smoothstep(0.55, 0.92);
-                    col = mix(col, colorJet, jetMix.mul(0.85));
-
-                    return vec4(col.mul(0.75), 1.0);
+                    const velocity = velocityBuffer.toAttribute();
+                    const speed = velocity.length();
+                    const colorMix = speed.div(maxSpeed).smoothstep(0, 0.5);
+                    
+                    // Base color, brighter
+                    const baseColor = mix(colorA, colorB, colorMix).mul(0.9);
+                    
+                    // Radial glow for ball shape: max(0, 1 - distance * 2)^2
+                    const distanceToCenter = uv().sub(0.5).length();
+                    const glow = float(1).sub(distanceToCenter.mul(2)).max(0).pow(2);
+                    
+                    return vec4(baseColor.mul(glow), 1);
                 })();
+                material.scaleNode = particleMassMultiplier.mul(scale);
 
-                // Per-particle sprite scale: mass-jitter × global scale.
-                material.scaleNode = scaleU.mul(massMul);
-
-                const geom = new T.PlaneGeometry(1, 1);
-                const mesh = new T.InstancedMesh(geom, material, COUNT);
-                mesh.frustumCulled = false;     // particles wrap; box culling is wrong
+                const geometry = new T.PlaneGeometry(1, 1);
+                const mesh = new T.InstancedMesh(geometry, material, COUNT);
                 this.scene.add(mesh);
 
-                // ── Opaque BH bodies + photon-ring overlays ──────────────
-                // Wrapped in a try/catch: in r172 some classic materials
-                // (MeshBasicMaterial / RingGeometry combinations) can
-                // throw when auto-converted to NodeMaterial under
-                // WebGPURenderer. We'd rather lose the visual BH bodies
-                // than the whole cosmos.
-                try {
-                    const bhBodyGeom = new T.SphereGeometry(EVENT_HORIZON * 0.92, 32, 32);
-                    const bhBodyMat  = new T.MeshBasicMaterial({ color: 0x000000 });
-                    this.bhMeshA = new T.Mesh(bhBodyGeom, bhBodyMat);
-                    this.bhMeshB = new T.Mesh(bhBodyGeom, bhBodyMat);
-                    this.bhMeshA.position.copy(bhA.value);
-                    this.bhMeshB.position.copy(bhB.value);
-                    this.scene.add(this.bhMeshA);
-                    this.scene.add(this.bhMeshB);
-
-                    const ringGeom = new T.RingGeometry(EVENT_HORIZON * 1.05, EVENT_HORIZON * 1.4, 64);
-                    const mkRingMat = () => new T.MeshBasicMaterial({
-                        color: 0xff8a3a, side: T.DoubleSide,
-                        transparent: true, opacity: 0.55,
-                        blending: T.AdditiveBlending, depthWrite: false
-                    });
-                    this.bhRingA = new T.Mesh(ringGeom, mkRingMat());
-                    this.bhRingB = new T.Mesh(ringGeom, mkRingMat());
-                    this.bhRingA.rotation.x = -Math.PI / 2;
-                    this.bhRingB.rotation.x = -Math.PI / 2;
-                    this.bhRingA.position.copy(bhA.value);
-                    this.bhRingB.position.copy(bhB.value);
-                    this.scene.add(this.bhRingA);
-                    this.scene.add(this.bhRingB);
-                } catch (bhErr) {
-                    console.warn('[Cosmos] BH meshes failed (cosmos continues without them):', bhErr);
-                }
-
-                // (Decided to skip a separate starfield layer: a quarter-
-                // million particles in a self-gravitating swirl already
-                // saturate the visual field, and a second TSL pipeline
-                // for static stars would only add compositor work.)
-
-                // ── Reveal canvas + start animation loop ─────────────────
-                this.container.style.opacity = "1";
-                this.renderer.setAnimationLoop(() => this._animate());
-
-                // ── Event listeners (after init so they reference real renderer) ──
+                // ── Event listeners ──────────────────────────────────────
                 window.addEventListener("resize",    () => this._handleResize(),     { passive: true });
                 window.addEventListener("scroll",    () => this._handleScroll(),     { passive: true });
                 window.addEventListener("mousemove", (e) => this._handleMouseMove(e), { passive: true });
-                this._installPointerHandlers(T);
+                
                 this._handleScroll();
-            }
-
-
-            // ── Cursor → world unprojection + uniform write ──────────────
-            _installPointerHandlers(T) {
-                const reproject = (e) => {
-                    const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
-                    const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
-                    const v = new T.Vector3(ndcX, ndcY, 0.5).unproject(this.camera);
-                    const dir = v.sub(this.camera.position);
-                    const BHy = -0.4;
-                    if (Math.abs(dir.y) < 1e-4) return null;
-                    const t = (BHy - this.camera.position.y) / dir.y;
-                    if (t <= 0) return null;
-                    return {
-                        x: this.camera.position.x + dir.x * t,
-                        y: BHy,
-                        z: this.camera.position.z + dir.z * t
-                    };
-                };
-                this._pointerDown = false;
-                window.addEventListener("pointerdown", (e) => {
-                    this._pointerDown = true;
-                    const p = reproject(e);
-                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
-                }, { passive: true });
-                window.addEventListener("pointermove", (e) => {
-                    if (!this._pointerDown) return;
-                    const p = reproject(e);
-                    if (p) this._uCursor.value.set(p.x, p.y, p.z, 1.0);
-                }, { passive: true });
-                const release = () => {
-                    this._pointerDown = false;
-                    this._uCursor.value.w = 0;
-                };
-                window.addEventListener("pointerup",     release, { passive: true });
-                window.addEventListener("pointercancel", release, { passive: true });
-                window.addEventListener("pointerleave", release, { passive: true });
+                this.container.style.opacity = "1";
+                this.renderer.setAnimationLoop(() => this._animate());
             }
 
             _animate() {
-                // ── Binary BH orbit ──────────────────────────────────────
-                // Two BHs swing around the system centre. The TSL compute
-                // Fn reads bhA / bhB uniforms each frame so particles
-                // feel the moving wells. The visible BH meshes + photon
-                // rings track the same positions.
-                if (this._uBhA && this._bhConst) {
-                    const c = this._bhConst;
-                    const t = performance.now() * c.ORBIT_RATE;
-                    const cx = Math.cos(t) * c.BH_SEP;
-                    const cz = Math.sin(t) * c.BH_SEP;
-                    this._uBhA.value.set( cx, c.BH_Y,  cz);
-                    this._uBhB.value.set(-cx, c.BH_Y, -cz);
-                    if (this.bhMeshA) this.bhMeshA.position.copy(this._uBhA.value);
-                    if (this.bhMeshB) this.bhMeshB.position.copy(this._uBhB.value);
-                    if (this.bhRingA) this.bhRingA.position.copy(this._uBhA.value);
-                    if (this.bhRingB) this.bhRingB.position.copy(this._uBhB.value);
+                // Update attractors rotation axes based on scroll progress
+                // We use scrollProgress (0 to 1) to rotate the attractors
+                if (this.attractorsRotationAxes) {
+                    const angle = this.scrollProgress * Math.PI * 4; // 2 full rotations across the page
+                    
+                    // Base axes we want to rotate
+                    const baseAxis1 = new THREE.Vector3(0, 1, 0);
+                    const baseAxis2 = new THREE.Vector3(1, 0, 0).normalize();
+                    const baseAxis3 = new THREE.Vector3(1, 1, 1).normalize();
+                    
+                    // Apply rotation
+                    this.attractorsRotationAxes.array[0].copy(baseAxis1.applyAxisAngle(new THREE.Vector3(1, 0, 0), angle));
+                    this.attractorsRotationAxes.array[1].copy(baseAxis2.applyAxisAngle(new THREE.Vector3(0, 1, 0), angle * 1.5));
+                    this.attractorsRotationAxes.array[2].copy(baseAxis3.applyAxisAngle(new THREE.Vector3(0, 0, 1), angle * 0.8));
                 }
 
-                // Smooth parallax from mouse position; pairs with scroll
-                // keyframes for the small head-movement feel.
+                // Smooth parallax from mouse position
                 const parallaxX =  this.mouseX * 0.4;
                 const parallaxY = -this.mouseY * 0.25;
                 this.camera.position.x += (this.targetPos.x + parallaxX - this.camera.position.x) * 0.05;
@@ -6053,10 +5931,10 @@
                 const sections = ['hero', 'about', 'projects', 'chat', 'timeline'];
                 const scrollY = window.scrollY;
                 const docH = document.documentElement.scrollHeight - window.innerHeight;
-                const progress = docH > 0 ? scrollY / docH : 0;
+                this.scrollProgress = docH > 0 ? scrollY / docH : 0;
 
                 const segCount = sections.length - 1;
-                const progSeg  = progress * segCount;
+                const progSeg  = this.scrollProgress * segCount;
                 const lowerIdx = Math.floor(progSeg);
                 const upperIdx = Math.min(sections.length - 1, lowerIdx + 1);
                 const t        = progSeg - lowerIdx;
