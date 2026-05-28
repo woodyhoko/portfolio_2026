@@ -2,21 +2,26 @@
 
 An interactive portfolio combining three on-device systems:
 
-1. **WebGPU N-body black-hole cosmos** — the always-on space
-   background. Physics in TSL compute shaders running on
-   WebGPURenderer (`instancedArray` storage buffers for position +
-   velocity, ping-ponged by the compute Fn each frame). Newtonian
-   gravity to a central black hole, bipolar jets ejected when a
-   particle crosses the event horizon, Keplerian respawn at the outer
-   rim, click-and-drag cursor attractor (direct-set, no JS-side lerp).
-   Sprite-based rendering with a speed-tinted color ramp
-   (`#3a78ff → #ffb066 → #fff4d4`) plus a pink-magenta tint
-   (`#ff5fb7`) for particles in the polar jet. 2^18 = 262 144
-   sprites on desktop, 2^15 = 32 768 on mobile. Camera position
-   lerps between per-section keyframes
+1. **WebGPU binary black-hole cosmos** — the always-on space
+   background. Two opaque BHs (depth-writing `MeshBasicMaterial`
+   spheres so particles behind them are physically occluded) orbit
+   a common centre of mass at ~30 s per revolution. Particles feel
+   the sum of both gravity wells; when one crosses either event
+   horizon it's ejected as a bipolar cyan jet; when it sails past
+   the outer rim it respawns into a fresh circumbinary Keplerian
+   orbit. A thin photon-ring overlay (`RingGeometry` with additive
+   blending) sits in the orbital plane around each BH and gives a
+   bright accretion-disk edge. Click-and-drag adds a temporary
+   third gravity well at the cursor. Physics runs entirely in TSL
+   compute shaders on `instancedArray(N, 'vec3')` storage buffers;
+   CPU per-frame cost is ~zero. 2^17 = 131 072 elegant pinpoint
+   sprites on desktop, 2^14 = 16 384 on mobile, with per-particle
+   mass jitter for natural size variation. Warm speed-tinted color
+   ramp (deep magenta `#5a0c2e` → red-orange `#ff5a2a` → warm
+   cream `#fff0c0`) with cool cyan jets (`#6ad8ff`). Camera
+   position lerps between per-section keyframes
    (hero / about / projects / chat / timeline) as you scroll, with
-   a subtle mouse-parallax offset on top. CPU per-frame cost is
-   ~zero.
+   a subtle mouse-parallax offset on top.
 2. **3D Semantic Galaxy** — every project / experience node is placed by
    running PCA on its 128-D **EmbeddingGemma** vector (Matryoshka-sliced
    from the model's 768-D output) and projecting onto a sphere. Distance
