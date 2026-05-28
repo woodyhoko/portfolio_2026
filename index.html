@@ -205,9 +205,12 @@
             width: 100%;
             height: 70px;
             z-index: 100;
-            background: rgba(3, 3, 4, 0.7);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            /* No backdrop-filter — it forces the compositor to re-blur
+               the entire navbar region of the cosmos canvas every frame.
+               On Windows/Chrome this is the dominant per-frame cost when
+               WebGPU is rendering 262 k particles underneath. The opaque
+               background below covers the cosmos visually anyway. */
+            background: rgba(3, 3, 4, 0.85);
             border-bottom: 1px solid var(--glass-border);
             transition: background var(--transition-smooth);
         }
@@ -1361,7 +1364,12 @@
             z-index: -1;
             pointer-events: none;
             opacity: 0;
-            transition: opacity 1.0s ease-in-out;
+            /* Short fade — during a longer transition the canvas would
+               be semi-transparent, forcing per-frame alpha compositing
+               that's wasted work. 0.35 s is long enough to feel like
+               a fade-in but short enough to be done before the user
+               notices. */
+            transition: opacity 0.35s ease-out;
         }
 
         .splat-loading-widget {
@@ -1411,7 +1419,10 @@
         }
 
         body.bg-splat-active .navbar {
-            background: rgba(3, 3, 4, 0.4);
+            /* Slightly higher opacity than the no-cosmos case because we
+               dropped the backdrop blur — solid darkness keeps the
+               cosmos behind the navbar from showing through. */
+            background: rgba(3, 3, 4, 0.78);
         }
 
         body.bg-splat-active .section {
@@ -2726,6 +2737,180 @@
                 dot += vecA[i] * vecB[i];
             }
             return dot;
+        }
+
+        // ==========================================================================
+        // EMBEDDING CACHE (IndexedDB) — computed lazily on first run,
+        // reused thereafter. Storing the canonical embeddings here
+        // (rather than baking them into projects.js / experiences.js)
+        // means:
+        //   - the JS data files stay tiny (no half-megabyte float arrays)
+        //   - adding a new project is a pure data edit; its embedding is
+        //     computed the next time the page loads and cached forever
+        //   - editing a project's text triggers re-embedding only for
+        //     that one doc (the cache key is a SHA-256 over its content)
+        // ==========================================================================
+        class EmbeddingCache {
+            constructor(dbName = 'portfolio_embeddings_v1', storeName = 'embeddings') {
+                this.dbName = dbName;
+                this.storeName = storeName;
+                this._dbPromise = null;
+            }
+
+            _openDB() {
+                if (this._dbPromise) return this._dbPromise;
+                this._dbPromise = new Promise((resolve, reject) => {
+                    if (typeof indexedDB === 'undefined') {
+                        reject(new Error('IndexedDB unavailable'));
+                        return;
+                    }
+                    const req = indexedDB.open(this.dbName, 1);
+                    req.onupgradeneeded = (e) => {
+                        const db = e.target.result;
+                        if (!db.objectStoreNames.contains(this.storeName)) {
+                            db.createObjectStore(this.storeName);
+                        }
+                    };
+                    req.onsuccess = (e) => resolve(e.target.result);
+                    req.onerror = (e) => reject(e.target.error);
+                });
+                return this._dbPromise;
+            }
+
+            async get(key) {
+                try {
+                    const db = await this._openDB();
+                    return await new Promise((resolve, reject) => {
+                        const tx = db.transaction(this.storeName, 'readonly');
+                        const req = tx.objectStore(this.storeName).get(key);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => reject(req.error);
+                    });
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            async set(key, value) {
+                try {
+                    const db = await this._openDB();
+                    return await new Promise((resolve, reject) => {
+                        const tx = db.transaction(this.storeName, 'readwrite');
+                        const req = tx.objectStore(this.storeName).put(value, key);
+                        req.onsuccess = () => resolve();
+                        req.onerror = () => reject(req.error);
+                    });
+                } catch (e) {
+                    /* IndexedDB unavailable (private browsing on some
+                       Safari builds) — silently fail; the runtime will
+                       still compute embeddings every load. */
+                }
+            }
+        }
+        window._embeddingCache = new EmbeddingCache();
+
+        // SHA-256 hex of the doc's textual content. Stable across page
+        // loads, deterministic, fast. Used as the cache key — editing
+        // any of these fields invalidates the cached embedding for
+        // that one doc and triggers a recompute on the next page load.
+        async function hashDoc(doc) {
+            const parts = [];
+            if (doc.title) parts.push(doc.title);
+            if (doc.role) parts.push(doc.role);
+            if (doc.company) parts.push(doc.company);
+            if (doc.category) parts.push(doc.category);
+            if (doc.description) parts.push(doc.description);
+            if (doc.details) parts.push(doc.details);
+            if (Array.isArray(doc.technologies)) parts.push(doc.technologies.join(','));
+            if (doc.challenges) parts.push(doc.challenges);
+            if (doc.results) parts.push(doc.results);
+            if (Array.isArray(doc.responsibilities)) parts.push(doc.responsibilities.join('|'));
+            if (Array.isArray(doc.highlights)) parts.push(doc.highlights.join('|'));
+            const buf = new TextEncoder().encode(parts.join('\n'));
+            const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+            const bytes = new Uint8Array(hashBuf);
+            let hex = '';
+            for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+            return hex;
+        }
+
+        // Text passed to the embedder for a single doc. Uses the
+        // "title: ... | text: ..." passage format recommended for
+        // EmbeddingGemma. Live search queries use the asymmetric
+        // "task: search result | query: ..." format so they project
+        // into the same semantic space.
+        //
+        // Field coverage matches what SemanticSearch tokenizes:
+        //   - Projects:    title, description, category, technologies,
+        //                  challenges, results
+        //   - Experiences: role @ company, details, category (if any)
+        function getDocText(doc) {
+            let title = doc.title || doc.role || '';
+            if (doc.role && doc.company) title = `${doc.role} @ ${doc.company}`;
+            const parts = [];
+            if (doc.category) parts.push(doc.category);
+            if (doc.description) parts.push(doc.description);
+            if (doc.details) parts.push(doc.details);
+            if (Array.isArray(doc.technologies) && doc.technologies.length) parts.push(doc.technologies.join(', '));
+            if (doc.challenges) parts.push(doc.challenges);
+            if (doc.results) parts.push(doc.results);
+            if (Array.isArray(doc.responsibilities)) parts.push(doc.responsibilities.join(' '));
+            if (Array.isArray(doc.highlights)) parts.push(doc.highlights.join(' '));
+            return `title: ${title} | text: ${parts.join(' ')}`;
+        }
+
+        // For every doc, look up its embedding in the cache by content
+        // hash. Missing entries are computed by the live Gemma pipeline
+        // (downloading the ~150 MB model if not already running) and
+        // written back to the cache.
+        //
+        // After this resolves, every doc has `doc.embedding` populated
+        // (or the function returned early if the embedder failed to
+        // load, in which case the galaxy will fall back to the TF-IDF
+        // positioning path).
+        async function ensureEmbeddings(docs, onProgress) {
+            if (!docs || docs.length === 0) return;
+            const cache = window._embeddingCache;
+
+            // Hash all docs in parallel.
+            const hashes = await Promise.all(docs.map(hashDoc));
+
+            // Pull every cached entry first — fast IndexedDB reads.
+            const cached = await Promise.all(hashes.map(h => cache.get(h)));
+            const missing = [];
+            for (let i = 0; i < docs.length; i++) {
+                if (cached[i] && cached[i].length) {
+                    docs[i].embedding = Array.from(cached[i]);
+                } else {
+                    missing.push({ doc: docs[i], hash: hashes[i], idx: i });
+                }
+            }
+
+            if (missing.length === 0) {
+                if (typeof onProgress === 'function') onProgress({ phase: 'cached', done: docs.length, total: docs.length });
+                return;
+            }
+
+            if (typeof onProgress === 'function') onProgress({ phase: 'loading-model', done: docs.length - missing.length, total: docs.length });
+            const pipe = await initGemmaEmbedder().catch(err => { console.error('[Embeddings] Gemma load failed:', err); return null; });
+            if (!pipe) return;   // galaxy will fall back to TF-IDF positions
+
+            // Compute one at a time. The model is shared with live
+            // search; sequential calls keep the GPU/WASM queue from
+            // backing up.
+            for (let i = 0; i < missing.length; i++) {
+                const { doc, hash } = missing[i];
+                if (typeof onProgress === 'function') onProgress({ phase: 'computing', done: docs.length - missing.length + i, total: docs.length });
+                try {
+                    const tensor = await pipe(getDocText(doc), { pooling: 'mean', normalize: true });
+                    const embedding = Float32Array.from(tensor.data);
+                    await cache.set(hash, embedding);
+                    doc.embedding = Array.from(embedding);
+                } catch (err) {
+                    console.warn('[Embeddings] failed for doc:', doc.title || doc.role, err);
+                }
+            }
+            if (typeof onProgress === 'function') onProgress({ phase: 'done', done: docs.length, total: docs.length });
         }
 
         // ==========================================================================
@@ -5383,7 +5568,14 @@
                 // blend is wasted work. Solid black clear color
                 // matches the page background.
                 this.renderer = new T.WebGPURenderer({ antialias: true, alpha: false });
-                this.renderer.setPixelRatio(window.devicePixelRatio);
+                // Cap pixelRatio at 1.5. devicePixelRatio is 2-3 on
+                // 4K/Retina/Windows-scaled displays, which means 4-9x
+                // more pixels rendered per frame for a marginal visual
+                // gain on a background that's already mostly motion
+                // blur. The threejs.org example doesn't have to share
+                // the GPU with the rest of our page; capping recovers
+                // the headroom we need for smooth compositing.
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
                 this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
                 this.renderer.setClearColor('#000000', 1);
 
@@ -6479,18 +6671,20 @@
             setupViewToggler();
 
             // ─── Deferred heavy loads ──────────────────────────────────────
-            // Gemma embedder (~150 MB ONNX) and the 3D Semantic Galaxy (a
-            // second Three.js renderer with its own shader compile + node
-            // build pass) used to fire at DOMContentLoaded, fighting the
-            // cosmos for network bandwidth, GPU init time and shader-compile
-            // cycles. We now gate both behind `window.cosmosReady`, which
-            // the cosmos resolves after its first frame is on screen.
-            // After that, we sequence them with rIC so they don't overlap
-            // with each other either: galaxy first (uses precomputed
-            // embeddings already in projects.js, no network), then the
-            // Gemma model download for live search queries.
+            // Sequence after cosmosReady:
+            //   1. ensureEmbeddings(allDocs) — cache hit returns instantly;
+            //      cache miss loads the Gemma model (~150 MB) and computes
+            //      missing embeddings (~150 ms each). Embeddings are
+            //      persisted in IndexedDB so subsequent loads are instant.
+            //   2. buildGalaxyNow() — depends on embeddings via the PCA
+            //      positioning path. If embeddings aren't available (model
+            //      load failed, IndexedDB blocked), the galaxy falls back
+            //      to the TF-IDF anchor-based path automatically.
+            // Bound by a 3s safety race against cosmosReady so the galaxy
+            // still appears even if cosmos init never reports ready.
             const btnGalaxy = document.getElementById("btn-galaxy-view");
             let galaxyInstance = null;
+            let embeddingsReadyPromise = null;
 
             const buildGalaxyNow = () => {
                 if (galaxyInstance || !THREE) return;
@@ -6500,37 +6694,55 @@
                 }
             };
 
-            // Wait for cosmos to render its first frame. Race with a 3s
-            // safety timeout — if cosmos somehow never reports ready (very
-            // slow GPU, error path we missed), we still want the rest of
-            // the page to come alive eventually.
+            const reportEmbeddingProgress = ({ phase, done, total }) => {
+                const input = document.getElementById('project-search');
+                if (!input) return;
+                if (phase === 'loading-model') {
+                    input.placeholder = `Loading Gemma model (first run only)...`;
+                } else if (phase === 'computing') {
+                    input.placeholder = `Embedding documents: ${done}/${total}...`;
+                } else if (phase === 'done' || phase === 'cached') {
+                    input.placeholder = 'Search projects & experiences...';
+                }
+            };
+
+            const ensureAllEmbeddings = () => {
+                if (embeddingsReadyPromise) return embeddingsReadyPromise;
+                const allDocs = [
+                    ...(window.projectsData || []),
+                    ...(window.experienceData || [])
+                ];
+                embeddingsReadyPromise = ensureEmbeddings(allDocs, reportEmbeddingProgress);
+                return embeddingsReadyPromise;
+            };
+
             const settleSafetyTimeout = new Promise(r => setTimeout(r, 3000));
             Promise.race([window.cosmosReady, settleSafetyTimeout]).then(() => {
                 const ric = (cb, opts) => (typeof requestIdleCallback === "function"
                     ? requestIdleCallback(cb, opts || { timeout: 500 })
                     : setTimeout(cb, 16));
 
-                // Galaxy first — synchronous Three.js work, finite.
-                ric(() => {
+                ric(async () => {
+                    // Embeddings first (cache hit = instant; cache miss =
+                    // model load + compute on first ever visit).
+                    await ensureAllEmbeddings();
+                    // Then galaxy — uses doc.embedding via PCA.
                     if (btnGalaxy && btnGalaxy.classList.contains("active")) {
                         buildGalaxyNow();
                     }
-                    // Then start streaming the Gemma model. Fire-and-forget;
-                    // search uses the TF-IDF fallback until this resolves.
-                    ric(() => { initGemmaEmbedder(); }, { timeout: 2000 });
                 });
             });
 
-            // Galaxy button still works even if the user clicks before the
-            // deferred init runs — same handler as before, but using the
-            // shared builder so we don't double-construct.
+            // Galaxy button click: kick off the same embeddings-then-build
+            // chain if the user toggles the view before the deferred init
+            // has run. ensureAllEmbeddings is idempotent (returns the
+            // cached promise) so this is safe to call multiple times.
             btnGalaxy.addEventListener("click", async () => {
                 if (!galaxyInstance) {
                     const threeOk = await loadThreeJS();
                     if (threeOk) {
-                        setTimeout(() => {
-                            buildGalaxyNow();
-                        }, 100);
+                        await ensureAllEmbeddings();
+                        setTimeout(() => buildGalaxyNow(), 100);
                     }
                 } else if (window.projectsGridController) {
                     window.projectsGridController.updateGalaxySearch();

@@ -25,17 +25,17 @@ Heavy work is sequenced so the first paint is never blocked:
 
 ```
 DOMContentLoaded
-   ├── Three.js dynamic import
+   ├── Three.js dynamic imports (parallel, modulepreloaded)
    ├── Cosmos controller created (rIC) ──┐
    ├── DOM / nav / grid setup            │
    └── Wait on window.cosmosReady ───────┘  (cosmos resolves it after
                                               its first GPU compute frame)
-        ├── Build SemanticGalaxy           (uses pre-baked embeddings,
-        │                                   no network — synchronous)
-        └── initGemmaEmbedder()            (~150 MB ONNX download for
-                                            live search queries; until
-                                            it resolves, search falls
-                                            back to TF-IDF)
+        ├── ensureEmbeddings(allDocs)      cache hit ⇒ instant
+        │                                   cache miss ⇒ download Gemma
+        │                                   (~150 MB) + compute missing
+        │                                   docs only, then IndexedDB-cache
+        │                                   the result
+        └── Build SemanticGalaxy           (uses doc.embedding via PCA)
 ```
 
 Why this matters: previously the embedder download + galaxy shader-compile
@@ -46,10 +46,31 @@ critical-path frames it needs.
 
 ---
 
+## Embedding cache (IndexedDB, lazy + scalable)
+
+`projects.js` and `experiences.js` ship **only the source text** — no
+precomputed embedding arrays. On every page load:
+
+1. Each doc is hashed with SHA-256 over its content fields (title,
+   description, category, technologies, etc.). The hash is the cache key.
+2. The page asks IndexedDB (`portfolio_embeddings_v1` / `embeddings`) for
+   each hash. Hits return a `Float32Array` instantly.
+3. Misses go to the live Gemma pipeline:
+   `pipe('title: <title> | text: <body>', { pooling: 'mean', normalize: true })`
+   and the resulting 768-D vector is written back to the cache.
+
+Editing a doc's text changes its hash, so only that one doc gets
+recomputed on the next load. Adding a new project is a pure JS-data edit;
+the first page load after the change computes that one embedding (~150 ms)
+and caches it forever. Clearing the IndexedDB database forces a full
+re-compute of all 27 docs (~5 s on WebGPU, ~30 s on WASM CPU).
+
+---
+
 ## Galaxy positioning (EmbeddingGemma → PCA → sphere)
 
-Every project and experience in `projects.js` / `experiences.js` ships
-with a precomputed Gemma 768-D embedding. At galaxy build time:
+Every project and experience runs through EmbeddingGemma to produce a
+768-D vector (cached as above). At galaxy build time:
 
 1. **Center the embeddings** — subtract the corpus mean. Gemma's
    embedding space is heavily anisotropic; removing the dominant common
@@ -101,9 +122,11 @@ N-body loop with progressive chunked initialization.
 ## Files
 
 - `index.html` — everything: styles, Cosmos controller, Semantic
-  Galaxy, search/embedder, on-device chatbot.
-- `projects.js`, `experiences.js` — data + precomputed Gemma embeddings.
-- `scratch/` — offline tooling used to compute the embeddings.
+  Galaxy, search/embedder, on-device chatbot, IndexedDB
+  EmbeddingCache.
+- `projects.js`, `experiences.js` — pure data (no embeddings — those
+  are computed at runtime and cached in IndexedDB).
+- `scratch/` — utility scripts.
 
 No build step. Open `index.html` directly or serve over any static
 host.
