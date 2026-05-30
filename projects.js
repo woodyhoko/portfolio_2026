@@ -345,5 +345,193 @@ window.projectsData = [
     "link": "https://github.com/woodyhoko/Restaruant-Advertisment-and-Description-Integrity-Analysis",
     "challenges": "Tokenizing and processing millions of reviews from the massive Yelp dataset inside limited GPU memory.",
     "results": "Achieved an F1 score of 88% in identifying exaggerations and mismatch between advertised pricing and review text."
+  },
+  {
+    "title": "Learning-Based Neuroevolution (LBNE) Self-Driving Agents",
+    "description": "A hybrid neuroevolution algorithm for autonomous 2D driving that evolves both neural network topology and weights through a genetic algorithm, while using backpropagation as a secondary learning signal. Each new agent first learns from the current best 'role model' via backprop before being evaluated in the environment, mirroring how organisms inherit traits yet still learn from experience.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "JavaScript",
+      "HTML5",
+      "Neuroevolution",
+      "Genetic Algorithm",
+      "Backpropagation",
+      "Neural Networks"
+    ],
+    "date": "2021-09",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/2D-auto-driving-AI",
+    "challenges": "Fusing gradient-based learning with population-based evolution so neither signal destabilizes the other, while balancing exploration of unknown topologies against convergence across generations.",
+    "results": "Authored a paper and built an in-browser driving simulation showing that pairing backpropagation with a topology-evolving GA outperforms either neuroevolution or gradient descent used alone."
+  },
+  {
+    "title": "PID-Controlled Perishable Pricing (NTU Fintech Hackathon)",
+    "description": "A fintech control-systems project that reframes grocery markdown pricing as a feedback control problem. Instead of a late, all-at-once 'reduced to clear' discount, a PID controller continuously eases the price of a perishable item down so inventory clears exactly as it reaches its expiry date, balancing consumer surplus against shop margin minus spoilage.",
+    "category": "Tools & Simulation",
+    "technologies": [
+      "JavaScript",
+      "HTML5",
+      "PID Control",
+      "Control Theory",
+      "Monte Carlo Simulation"
+    ],
+    "date": "2016-11",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/2016_NTU_hackathon_fintech",
+    "challenges": "Tuning the proportional-integral-derivative gains so the price tracks an ideal linear sell-down to zero at expiry without oscillating, while modeling how customer demand responds to discount over the item's shelf life.",
+    "results": "Built an interactive simulation with price, inventory, and welfare trajectories plus a Monte-Carlo head-to-head, demonstrating that continuous PID markdowns reduce spoilage and beat conventional last-minute clearance pricing."
+  },
+  {
+    "title": "AI Mesh: P2P Network of On-Device Agents",
+    "description": "A single-file web app that turns any browser tab into an autonomous AI node on a peer-to-peer mesh. Each node runs a local LLM, exposes a personal MCP knowledge base, and trades knowledge with other agents over real WebRTC data channels. Queries flood the mesh with a TTL and message-id dedup so a question reaches agents several hops away.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "HTML5",
+      "JavaScript",
+      "WebRTC",
+      "PeerJS",
+      "Gemma",
+      "MCP",
+      "On-device LLM"
+    ],
+    "date": "2026-05",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/ai-mesh",
+    "challenges": "Bootstrapping a decentralized mesh from a minimal signaling broker and then dropping off it to run pure browser-to-browser P2P, while gossiping peer lists and routing flooded queries without loops.",
+    "results": "Delivered beacon and participant nodes that self-discover via peer exchange and answer questions collaboratively, with all inference and knowledge staying entirely on-device using Chrome's Prompt API or a local Gemma fallback."
+  },
+  {
+    "title": "Artificial Life: Neuroevolution Ecosystem",
+    "description": "An agent-based artificial-life simulator where neural-network creatures evolve on a 2D toroidal world of heterogeneously regrowing grass patches. Predator/prey dynamics, foraging strategies, and territorial behaviour emerge purely from evolved sensorimotor controllers, with no hand-coded rules — in the tradition of Braitenberg vehicles and the animat paradigm.",
+    "category": "Tools & Simulation",
+    "technologies": [
+      "Java",
+      "Processing",
+      "Neural Networks",
+      "Genetic Algorithm",
+      "Agent-Based Modeling"
+    ],
+    "date": "2018-05",
+    "stars": "1",
+    "link": "https://github.com/woodyhoko/Artificial_Life",
+    "challenges": "Designing agents whose evolved wiring produces stable ecosystems rather than instant extinction or runaway population explosions, balancing resource regrowth against reproduction pressure.",
+    "results": "Observed life-like emergent behaviours — predation, herding, and territory defense — arising from local rules alone, across both competitive and survival simulation modes."
+  },
+  {
+    "title": "NightConnect: Serverless P2P Chat",
+    "description": "A peer-to-peer browser chat where two peers connect directly via WebRTC, so messages never touch a backend, are never stored, and disappear when the tab closes. A signaling server is involved only for the WebRTC handshake; once the data channel opens, all traffic flows over a DTLS-encrypted SCTP link.",
+    "category": "Systems & Cyber Security",
+    "technologies": [
+      "HTML5",
+      "JavaScript",
+      "WebRTC",
+      "PeerJS",
+      "DTLS"
+    ],
+    "date": "2024-06",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/chat",
+    "challenges": "Establishing reliable ordered SCTP-over-DTLS data channels through NAT using only short PeerJS IDs, with zero server involvement once the connection is established.",
+    "results": "Shipped an ephemeral, fully private chat where the only server contact is the ICE negotiation handshake and no message ever leaves the direct peer-to-peer link."
+  },
+  {
+    "title": "Collective Intelligence: AI Debate Arena",
+    "description": "A browser-based debate arena where two on-device AI debaters argue opposite sides of a binary motion while a panel of AI judges — each with their own background, bias, and decision criteria — votes after every round. A small experiment in collective intelligence: many opinionated, imperfect judges aggregating into a single verdict.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "HTML5",
+      "JavaScript",
+      "Chrome Prompt API",
+      "Gemma",
+      "WebGPU"
+    ],
+    "date": "2026-05",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/collective-intelligence",
+    "challenges": "Steering a small local model to maintain distinct, consistent judge personas and emit structured PRO/CON votes reliably across rounds, with no server-side model to fall back on.",
+    "results": "Built a fully on-device arena using Chrome's Prompt API with automatic Gemma/WebGPU fallback, animating live round-by-round vote tallies alongside a complete debate transcript."
+  },
+  {
+    "title": "M(L)ove: AI Dance Coach",
+    "description": "A computer-vision choreography feedback system built in 36 hours at Hack the North. Upload a reference dance and your own attempt, and a pose-estimation pipeline produces a frame-by-frame similarity score that pinpoints exactly where your movement diverges from the original — feedback that video tutorials alone cannot give.",
+    "category": "Computer Vision & 3D",
+    "technologies": [
+      "Python",
+      "Pose Estimation",
+      "Computer Vision",
+      "Cosine Similarity",
+      "OpenCV"
+    ],
+    "date": "2021-01",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/hackathon_HTN",
+    "challenges": "Making the similarity score invariant to body size, camera distance, and position by mean-centering and L2-normalizing the 17-keypoint pose vectors before comparison.",
+    "results": "Delivered a working two-video comparison demo that locates frame-level choreography errors, built end to end during a single hackathon weekend with a three-person team."
+  },
+  {
+    "title": "Isaac Modular 3D: Twin-Stick Roguelite",
+    "description": "A 3D twin-stick roguelite shooter built in Unity, inspired by The Binding of Isaac. Every upgrade is implemented as an independent, modular effect on the player's cannon, so items picked up in any order combine freely — more projectiles and bigger and homing and sticky, all at once — with no special-case code.",
+    "category": "Computer Vision & 3D",
+    "technologies": [
+      "C#",
+      "Unity",
+      "3D Game Development",
+      "Component Architecture"
+    ],
+    "date": "2022-03",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/Isaac-Moduler-3D-approach",
+    "challenges": "Designing upgrade items as orthogonal, self-contained modifiers so new items can be added by writing one independent effect, while still composing cleanly when many are stacked.",
+    "results": "Recreated Isaac's emergent item-synergy gameplay in 3D, where each pickup flips a single flag or value on the cannon and arbitrary combinations of effects compose automatically."
+  },
+  {
+    "title": "Liver Cancer Survival Prediction (TCGA-LIHC)",
+    "description": "An exploratory bioinformatics study asking whether liver-cancer patient survival is associated with tumour gene (mRNA) expression, using the public, de-identified TCGA Liver Hepatocellular Carcinoma cohort from cBioPortal. It pairs per-gene correlation analysis with a binary survival-outcome prediction model.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "Python",
+      "Bioinformatics",
+      "mRNA Expression",
+      "Survival Analysis",
+      "Machine Learning"
+    ],
+    "date": "2022-03",
+    "stars": "1",
+    "link": "https://github.com/woodyhoko/liver-cancer-prediction",
+    "challenges": "Working strictly within the privacy constraints of public, de-identified data and finding reliable signal in high-dimensional gene-expression vectors where the number of genes vastly exceeds the patient count.",
+    "results": "Identified genes whose tumour mRNA expression separates survivors from non-survivors and framed overall survival as a predictable binary outcome on the public TCGA-LIHC cohort."
+  },
+  {
+    "title": "Tetris AI in x86 Assembly",
+    "description": "A fully playable Tetris game with a self-learning heuristic AI, an adversarial 'Hell Mode' engine that feeds the worst possible piece, and a self-play training loop — all hand-written in roughly 2,000 lines of x86 Assembly, with every array access, loop, and branch manually mapped to registers and jumps.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "x86 Assembly",
+      "Heuristic Search",
+      "Self-Learning AI",
+      "Game AI"
+    ],
+    "date": "2018-12",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/Tetris_AI",
+    "challenges": "Hand-translating the AI's board-evaluation heuristic and weight-update loop into registers, addressing modes, and conditional jumps, with no compiler to optimize or hide the cost structure.",
+    "results": "Built a complete self-tuning AI that sustains an average of 50,000 cleared lines without next-piece preview or hold, plus an inverse-heuristic adversarial piece generator for Hell Mode."
+  },
+  {
+    "title": "TensorFlow.js WASM Benchmarking (IMC '23)",
+    "description": "A cross-browser inference performance study of TensorFlow.js backends (WebGL, WASM, and CPU) using Selenium-automated timing. It is the machine-learning artifact behind an ACM Internet Measurement Conference 2023 paper on real-world WebAssembly performance, holding the benchmark harness, collected timing data, and analysis.",
+    "category": "AI/ML & LLM",
+    "technologies": [
+      "TensorFlow.js",
+      "WebAssembly",
+      "JavaScript",
+      "Selenium",
+      "Performance Benchmarking"
+    ],
+    "date": "2023-10",
+    "stars": "1",
+    "link": "https://github.com/woodyhoko/tfjs_wasm",
+    "challenges": "Automating reproducible warm-versus-cold timing across browsers and backends while isolating initialization overhead, memory-transfer cost, and silent GPU-API failures.",
+    "results": "Quantified 15-20x WASM speedups over plain-JS CPU inference and surfaced a V8 'first-argument advantage', contributing the ML portion of a published IMC '23 study."
   }
 ];
