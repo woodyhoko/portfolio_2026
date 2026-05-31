@@ -28,6 +28,7 @@ window.experienceData = [
     ]
   },
   {
+    "title": "Sparse RAG: Accelerating RAG Inference (ICLR 2025)",
     "role": "Research Collaborator",
     "company": "Google DeepMind",
     "duration": "2024 - 2025",
@@ -39,6 +40,7 @@ window.experienceData = [
     ]
   },
   {
+    "title": "Hypertension Detection from Wearable PPG (medRxiv)",
     "role": "Research Collaborator",
     "company": "Google Health & Fitbit",
     "duration": "2024 - 2025",

@@ -2443,7 +2443,8 @@
                     return `• Project — ${p.title} (${p.category}, ${p.date})\n  Tech: ${p.technologies.join(", ")}\n  ${p.description}`;
                 }
                 const e = doc.ref;
-                return `• Experience — ${e.role} @ ${e.company} (${e.duration})\n  ${e.details}`;
+                const expHead = e.title ? `${e.title} — ${e.role} @ ${e.company}` : `${e.role} @ ${e.company}`;
+                return `• Experience — ${expHead} (${e.duration})\n  ${e.details}`;
             }).join("\n");
         }
 
@@ -2804,8 +2805,8 @@
                     <div class="timeline-dot"></div>
                     <div class="timeline-content">
                         <span class="timeline-date">${escapeHtml(exp.duration)}</span>
-                        <h3>${escapeHtml(exp.role)}</h3>
-                        <h4>${escapeHtml(exp.company)}</h4>
+                        <h3>${escapeHtml(exp.title || exp.role)}</h3>
+                        <h4>${escapeHtml(exp.title ? `${exp.company} · ${exp.role}` : exp.company)}</h4>
                         ${liHtml}
                     </div>
                 </div>`;
@@ -3239,7 +3240,7 @@
                 docs.push({ id: `proj-${idx}`, tokens: tokenize(text), ref: proj, isProject: true });
             });
             experienceData.forEach((exp, idx) => {
-                const text = (exp.role + " " + exp.company + " " + exp.details).toLowerCase();
+                const text = ((exp.title || "") + " " + exp.role + " " + exp.company + " " + exp.details).toLowerCase();
                 docs.push({ id: `exp-${idx}`, tokens: tokenize(text), ref: exp, isProject: false });
             });
 
@@ -3717,11 +3718,12 @@
                     : "";
                 this.modalContent.innerHTML = `
                     <div class="modal-header-wrap">
-                        <h2>${exp.company} &mdash; ${exp.role}</h2>
+                        <h2>${exp.title || `${exp.company} &mdash; ${exp.role}`}</h2>
                         <div class="tags">
                             <span class="tag"><i class="fa-solid fa-calendar"></i> ${exp.duration}</span>
                             ${exp.category ? `<span class="tag"><i class="fa-solid ${this.getCategoryIcon(exp.category)}"></i> ${exp.category}</span>` : ""}
-                            <span class="tag"><i class="fa-solid fa-briefcase"></i> Work Experience</span>
+                            ${exp.title ? `<span class="tag"><i class="fa-solid fa-building"></i> ${exp.company} · ${exp.role}</span>` : ""}
+                            <span class="tag"><i class="fa-solid ${exp.title ? "fa-file-lines" : "fa-briefcase"}"></i> ${exp.title ? "Publication" : "Work Experience"}</span>
                         </div>
                     </div>
                     <div class="modal-section">
@@ -3730,7 +3732,7 @@
                     </div>
                     ${linkButtons ? `
                     <div class="modal-section">
-                        <h3><i class="fa-solid fa-link"></i> Related Projects & Launches</h3>
+                        <h3><i class="fa-solid fa-link"></i> ${exp.title ? "Paper & Resources" : "Related Projects & Launches"}</h3>
                         <div class="tags" style="gap:12px;">
                             ${linkButtons}
                         </div>
@@ -4286,7 +4288,7 @@
                         y: py / total,
                         z: pz / total,
                         neighbors: top.map(({ doc, sim }) => ({
-                            title: doc.isProject ? doc.ref.title : `${doc.ref.role} @ ${doc.ref.company}`,
+                            title: doc.isProject ? doc.ref.title : (doc.ref.title || `${doc.ref.role} @ ${doc.ref.company}`),
                             sim
                         }))
                     };
@@ -4729,7 +4731,8 @@
                         titleCtx.font = "bold 38px 'Outfit', 'Inter', 'Segoe UI', sans-serif";
                         titleCtx.textAlign = "center";
                         titleCtx.textBaseline = "middle";
-                        const displayTitle = exp.company.length > 20 ? exp.company.substring(0, 18) + "..." : exp.company;
+                        const captionSource = exp.title || exp.company;
+                        const displayTitle = captionSource.length > 20 ? captionSource.substring(0, 18) + "..." : captionSource;
                         titleCtx.fillText(displayTitle, 320, 80);
 
                         const titleTex = new THREE.CanvasTexture(titleCanvas);
@@ -5635,9 +5638,9 @@
                                 const exp = node.userData.experience;
                                 this.tooltip.innerHTML = `
                                     <div style="border-left: 3px solid ${colorStr}; padding-left: 10px;">
-                                        <strong style="font-size: 0.95rem; color: #ffffff; display: block; margin-bottom: 2px;">${exp.company}</strong>
+                                        <strong style="font-size: 0.95rem; color: #ffffff; display: block; margin-bottom: 2px;">${exp.title || exp.company}</strong>
                                         <div style="font-size: 0.72rem; color: ${colorStr}; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;">
-                                            <span><i class="fa-solid fa-briefcase"></i> ${exp.role}</span>
+                                            <span><i class="fa-solid fa-briefcase"></i> ${exp.title ? `${exp.company} · ${exp.role}` : exp.role}</span>
                                             <span style="color: rgba(255, 255, 255, 0.6);"><i class="fa-solid fa-calendar"></i> ${exp.duration}</span>
                                         </div>
                                         <p style="font-size: 0.76rem; color: rgba(255, 255, 255, 0.85); margin: 0 0 6px 0; line-height: 1.4;">
