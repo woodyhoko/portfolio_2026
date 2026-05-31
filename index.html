@@ -609,6 +609,47 @@
             letter-spacing: 1px;
         }
 
+        .social-links {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        .social-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 20px;
+            border-radius: 30px;
+            font-family: var(--font-header);
+            font-size: 0.9rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-decoration: none;
+            color: rgba(255, 255, 255, 0.85);
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--glass-border);
+            transition: all var(--transition-fast);
+        }
+
+        .social-btn i {
+            font-size: 1.1rem;
+            color: var(--accent-cyan);
+            transition: all var(--transition-fast);
+        }
+
+        .social-btn:hover {
+            color: #ffffff;
+            border-color: var(--glass-border-glow);
+            background: rgba(0, 240, 255, 0.06);
+            box-shadow: 0 0 18px rgba(0, 240, 255, 0.18);
+            transform: translateY(-2px);
+        }
+
+        .social-btn:hover i {
+            text-shadow: 0 0 10px var(--accent-cyan-glow);
+        }
+
         .about-skills h3 {
             font-family: var(--font-header);
             font-size: 1.3rem;
@@ -2060,20 +2101,29 @@
             </div>
             <div class="about-container">
                 <div class="about-text">
-                    <p>I am an <strong>AI/ML Software Engineer</strong> specializing in deploying high-performance reasoning engines and interactive 3D graphics directly on client devices. By utilizing WebGPU, Three.js, and local models, I build sandboxed systems and custom peer-to-peer protocols that deliver responsive, privacy-preserving, and completely offline experiences.</p>
+                    <p>I am an <strong>AI/ML Software Engineer</strong> with cross-domain experience spanning <strong>astronomy, weather forecasting, economics, healthcare, NLP, and computer vision</strong>. I work across the entire model lifecycle — from training and distilling deep models, to architecting highly efficient inference engines, to scalable, high-throughput serving.</p>
+                    <p>I bring that same intelligence directly on-device through WebGPU, Three.js, and local LLMs — building sandboxed systems and custom peer-to-peer protocols that deliver responsive, privacy-preserving, and completely offline experiences.</p>
                     <div class="stats-grid">
                         <div class="stat-card">
                             <span class="stat-num">20+</span>
                             <span class="stat-label">Projects Built</span>
                         </div>
                         <div class="stat-card">
-                            <span class="stat-num">2+</span>
-                            <span class="stat-label">AI Edge & Chrome Built-in AI</span>
+                            <span class="stat-num">6</span>
+                            <span class="stat-label">Cross-Domain Fields</span>
                         </div>
                         <div class="stat-card">
-                            <span class="stat-num">4.0</span>
-                            <span class="stat-label">USC CS GPA</span>
+                            <span class="stat-num">E2E</span>
+                            <span class="stat-label">Train · Infer · Serve</span>
                         </div>
+                    </div>
+                    <div class="social-links">
+                        <a href="https://github.com/woodyhoko" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="GitHub profile">
+                            <i class="fa-brands fa-github"></i><span>GitHub</span>
+                        </a>
+                        <a href="https://www.linkedin.com/in/hoko/" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="LinkedIn profile">
+                            <i class="fa-brands fa-linkedin-in"></i><span>LinkedIn</span>
+                        </a>
                     </div>
                 </div>
                 <div class="about-skills">
