@@ -4802,7 +4802,7 @@
                     // Connect to 2nd and 3rd neighbors if they are within distance
                     for (let c = 1; c < Math.min(candidates.length, 3); c++) {
                         const cand = candidates[c];
-                        if (cand.dist < 13.5) {
+                        if (cand.dist < 11.5) {
                             const j = cand.index;
                             const edgeKey = `${Math.min(i, j)}-${Math.max(i, j)}`;
                             if (!createdEdges.has(edgeKey)) {
