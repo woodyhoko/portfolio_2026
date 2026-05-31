@@ -1,8 +1,21 @@
 window.experienceData = [
   {
+    "role": "Machine Learning Engineer",
+    "company": "Google",
+    "duration": "2026 - Present",
+    "category": "AI/ML & LLM",
+    "details": "On the Google Lens deep learning team for retrieval and ranking, powering AI Mode in Google Search and AI Overviews with knowledge-grounded retrieval and ranking models. Distill from Gemini and design highly compressed models that maintain near-equal quality while delivering the scalability and high efficiency required by the Google Search (Lens) stack, focused on enabling multimodal features.",
+    "links": [
+      { "label": "AI Mode in Search", "url": "https://blog.google/products/search/ai-mode-search/" },
+      { "label": "AI Overviews", "url": "https://blog.google/products/search/generative-ai-google-search-may-2024/" },
+      { "label": "Google Lens", "url": "https://lens.google/" },
+      { "label": "Gemini", "url": "https://deepmind.google/models/gemini/" }
+    ]
+  },
+  {
     "role": "Software Engineer",
     "company": "Google",
-    "duration": "2023 - Present",
+    "duration": "2023 - 2026",
     "category": "AI/ML & LLM",
     "details": "Core contributor to the LiteRT LM inference engine on the Google AI Edge team, bringing large language models to run privately and offline across devices — including NPU acceleration for LiteRT LM. Enabled Gemma multimodality (vision + audio + text) and Gemini Nano on Windows, macOS, and Linux, and helped power launched products such as Chrome Built-in AI and Google AI Core on Android. Also contributed to shipping the Google AI Edge Gallery app for both Android and iOS.",
     "links": [
