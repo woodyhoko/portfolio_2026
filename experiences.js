@@ -73,7 +73,8 @@ window.experienceData = [
     "category": "Computer Vision & 3D",
     "details": "Developed meteorological computer vision models that generate future-timeframe satellite imagery to forecast cloud movement and drive short-horizon solar power prediction. Trained solar panel energy generation forecast networks, achieving >99% prediction accuracy, and co-authored \"Forecasting of Solar Power Generation using Real-time Meteorological Information\" (2020). Analyzed data contribution ratios inside deep learning backbones to verify source reliability.",
     "links": [
-      { "label": "Solar Forecasting Paper", "url": "https://www.researchgate.net/publication/374842924_Forecasting_of_Solar_Power_Generation_using_Real-time_Meteorological_Information" }
+      { "label": "Solar Forecasting Paper (PDF)", "url": "files/solar-power-forecasting.pdf" },
+      { "label": "ResearchGate", "url": "https://www.researchgate.net/publication/374842924_Forecasting_of_Solar_Power_Generation_using_Real-time_Meteorological_Information" }
     ]
   },
   {
