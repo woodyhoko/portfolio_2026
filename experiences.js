@@ -28,6 +28,28 @@ window.experienceData = [
     ]
   },
   {
+    "role": "Research Collaborator",
+    "company": "Google DeepMind",
+    "duration": "2024 - 2025",
+    "category": "AI/ML & LLM",
+    "details": "Collaborated with Google DeepMind on Sparse RAG — \"Accelerating Inference of Retrieval-Augmented Generation via Sparse Context Selection\", published at ICLR 2025. Designed a sparse decoding paradigm that encodes retrieved documents in parallel and lets the LLM selectively attend to only the most relevant caches through learned control tokens, eliminating long-range attention latency while filtering out distracting context to improve generation quality. Demonstrated an optimal balance between answer quality and compute efficiency across four retrieval benchmarks — work that directly informs efficient retrieval and ranking for production search.",
+    "links": [
+      { "label": "ICLR 2025 Paper (PDF)", "url": "files/iclr2025-deepmind.pdf" },
+      { "label": "ICLR 2025 Proceedings", "url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/411fa9d368b5485be4c6bb62615b365e-Abstract-Conference.html" }
+    ]
+  },
+  {
+    "role": "Research Collaborator",
+    "company": "Google Health & Fitbit",
+    "duration": "2024 - 2025",
+    "category": "AI/ML & LLM",
+    "details": "Collaborated with the Google Health and Fitbit team on opportunistically detecting signs of hypertension from photoplethysmography (PPG) signals on a consumer smartwatch, published as a medRxiv preprint. Built and evaluated machine learning models that infer blood-pressure-related risk from raw wrist PPG passively collected during everyday wear, enabling scalable, non-invasive cardiovascular screening at population scale.",
+    "links": [
+      { "label": "medRxiv Paper (PDF)", "url": "files/hypertension-ppg-fitbit.pdf" },
+      { "label": "medRxiv Preprint", "url": "https://www.medrxiv.org/content/10.64898/2025.12.10.25341972v1" }
+    ]
+  },
+  {
     "role": "Software Engineer",
     "company": "MyCareLinq",
     "duration": "2023 - 2023",
@@ -49,7 +71,10 @@ window.experienceData = [
     "company": "Ubiik",
     "duration": "2020 - 2020",
     "category": "Computer Vision & 3D",
-    "details": "Developed meteorological computer vision models predicting cloud movements from satellite imagery. Trained solar panel energy generation forecast networks, achieving >99% prediction accuracy. Analyzed data contribution ratios inside deep learning backbones to verify source reliability."
+    "details": "Developed meteorological computer vision models that generate future-timeframe satellite imagery to forecast cloud movement and drive short-horizon solar power prediction. Trained solar panel energy generation forecast networks, achieving >99% prediction accuracy, and co-authored \"Forecasting of Solar Power Generation using Real-time Meteorological Information\" (2020). Analyzed data contribution ratios inside deep learning backbones to verify source reliability.",
+    "links": [
+      { "label": "Solar Forecasting Paper", "url": "https://www.researchgate.net/publication/374842924_Forecasting_of_Solar_Power_Generation_using_Real-time_Meteorological_Information" }
+    ]
   },
   {
     "role": "Back-end Developer",
@@ -63,6 +88,10 @@ window.experienceData = [
     "company": "Caltech (SURF Program)",
     "duration": "2018 - 2018",
     "category": "Computer Vision & 3D",
-    "details": "Analyzed large-scale transient imaging data streams from the Zwicky Transient Facility scanning 2/3 of the sky nightly. Co-authored and published astronomical findings on a Type IIb Supernova in The Astrophysical Journal Letters (878:L5). Simulated supernova mass ejections and double-peak light-curve models using computational physics."
+    "details": "Analyzed large-scale transient imaging data streams from the Zwicky Transient Facility scanning 2/3 of the sky nightly. Co-authored and published astronomical findings on a Type IIb Supernova in The Astrophysical Journal Letters (878:L5). Simulated supernova mass ejections and double-peak light-curve models using computational physics.",
+    "links": [
+      { "label": "ApJL Paper (PDF)", "url": "files/type-iib-supernova.pdf" },
+      { "label": "DOI: 10.3847/2041-8213/ab218f", "url": "https://doi.org/10.3847/2041-8213/ab218f" }
+    ]
   }
 ];
