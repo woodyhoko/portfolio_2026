@@ -68,7 +68,17 @@
             --accent-green-glow: hsla(120, 100%, 50%, 0.25);
             --accent-gold: hsl(40, 100%, 50%);
             --accent-gold-glow: hsla(40, 100%, 50%, 0.25);
-            
+            --accent-violet: hsl(258, 90%, 66%);
+            --accent-violet-glow: hsla(258, 90%, 66%, 0.3);
+
+            /* Signature gradient used for headline accents & progress */
+            --gradient-aurora: linear-gradient(100deg, var(--accent-cyan) 0%, #4d9fff 45%, var(--accent-violet) 100%);
+
+            /* Text hierarchy */
+            --text-primary: #f2f5fa;
+            --text-secondary: rgba(235, 240, 250, 0.72);
+            --text-tertiary: rgba(235, 240, 250, 0.48);
+
             /* Fonts */
             --font-header: 'Space Grotesk', sans-serif;
             --font-mono: 'Share Tech Mono', monospace;
@@ -165,6 +175,9 @@
             -webkit-backdrop-filter: var(--glass-blur);
             border: 1px solid var(--glass-border);
             border-radius: 16px;
+            /* Faint top edge-light — the "2026 glassmorphism" cue that sells
+               layered depth without extra blur cost. */
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
         }
 
         .glass-section {
@@ -172,7 +185,9 @@
             backdrop-filter: var(--glass-blur);
             -webkit-backdrop-filter: var(--glass-blur);
             border: 1px solid var(--glass-border);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.05),
+                0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
 
         .hidden {
@@ -246,6 +261,27 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            position: relative;
+            padding: 4px 0;
+        }
+
+        /* Animated underline — grows from the left on hover/active */
+        .nav-item::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            bottom: -2px;
+            width: 100%;
+            height: 2px;
+            border-radius: 2px;
+            background: var(--gradient-aurora);
+            transform: scaleX(0);
+            transform-origin: left center;
+            transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .nav-item:hover::after, .nav-item.active::after {
+            transform: scaleX(1);
         }
 
         .nav-item:hover, .nav-item.active {
@@ -377,6 +413,12 @@
             max-width: 800px;
             position: relative;
             top: -40px;
+            animation: heroRise 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+        }
+
+        @keyframes heroRise {
+            from { opacity: 0; transform: translateY(26px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .logo-wrapper {
@@ -384,6 +426,20 @@
             position: relative;
             margin-bottom: 30px;
             width: 100%;
+            /* Opacity-only entrance — LogoAnimator owns the logo's transforms,
+               so the wrapper must never be translated. Deliberately NO
+               fill-mode: a filling opacity animation would keep this wrapper
+               in a permanent stacking context (Web Animations §side-effects),
+               trapping the logo's z-index:105 below the z-index:100 navbar
+               once the logo goes position:fixed on scroll. With the default
+               fill:none the stacking context is released when the entrance
+               finishes. */
+            animation: heroFade 0.8s ease-out;
+        }
+
+        @keyframes heroFade {
+            from { opacity: 0; }
+            to { opacity: 1; }
         }
 
         @media screen and (max-width: 768px) {
@@ -454,7 +510,7 @@
 
         .hero-tagline {
             font-size: 1.15rem;
-            color: rgba(255, 255, 255, 0.7);
+            color: var(--text-secondary);
             max-width: 600px;
             margin: 0 auto 40px;
         }
@@ -484,11 +540,35 @@
             color: #030304;
             border: none;
             box-shadow: 0 4px 15px rgba(0, 240, 255, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Light-sweep sheen that glides across on hover */
+        .primary-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -80%;
+            width: 50%;
+            height: 100%;
+            background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+            transform: skewX(-20deg);
+            transition: left 0.55s cubic-bezier(0.25, 1, 0.5, 1);
+            pointer-events: none;
+        }
+
+        .primary-btn:hover::before {
+            left: 130%;
         }
 
         .primary-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(0, 240, 255, 0.5);
+        }
+
+        .btn:active {
+            transform: translateY(0) scale(0.985);
         }
 
         .secondary-btn {
@@ -551,17 +631,47 @@
             display: flex;
             align-items: center;
             gap: 15px;
+            /* Kinetic-typography accent: soft white → ice-cyan sweep */
+            background: linear-gradient(105deg, #ffffff 0%, #ffffff 55%, #a8ecff 85%, #7fd8ff 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
         .section-header h2 i {
             color: var(--accent-cyan);
+            -webkit-text-fill-color: var(--accent-cyan);
+            font-size: 0.8em;
+        }
+
+        /* Tiny twinkling star that punctuates every section title */
+        .section-header h2::after {
+            content: '\2726';
+            font-size: 0.9rem;
+            color: var(--accent-cyan);
+            -webkit-text-fill-color: var(--accent-cyan);
+            align-self: flex-start;
+            margin-left: -6px;
+            animation: twinkle 2.6s ease-in-out infinite;
+        }
+
+        @keyframes twinkle {
+            0%, 100% { opacity: 0.25; transform: scale(0.7) rotate(0deg); text-shadow: none; }
+            50% { opacity: 1; transform: scale(1.05) rotate(20deg); text-shadow: 0 0 12px var(--accent-cyan-glow); }
         }
 
         .header-line {
             width: 60px;
             height: 3px;
-            background: linear-gradient(90deg, var(--accent-cyan), transparent);
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-violet), transparent);
+            background-size: 200% 100%;
             border-radius: 2px;
+            animation: lineFlow 5s linear infinite;
+        }
+
+        @keyframes lineFlow {
+            0% { background-position: 0% 0; }
+            100% { background-position: -200% 0; }
         }
 
         /* ==========================================================================
@@ -575,8 +685,12 @@
 
         .about-text p {
             margin-bottom: 20px;
-            color: rgba(255, 255, 255, 0.8);
+            color: var(--text-secondary);
             font-size: 1.05rem;
+        }
+
+        .about-text p strong {
+            color: var(--text-primary);
         }
 
         .stats-grid {
@@ -592,6 +706,13 @@
             border-radius: 12px;
             padding: 15px;
             text-align: center;
+            transition: transform var(--transition-smooth), border-color var(--transition-fast), box-shadow var(--transition-smooth);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(0, 240, 255, 0.25);
+            box-shadow: 0 8px 24px rgba(0, 240, 255, 0.08);
         }
 
         .stat-num {
@@ -599,7 +720,11 @@
             font-size: 2rem;
             font-weight: 700;
             font-family: var(--font-header);
-            color: var(--accent-cyan);
+            background: var(--gradient-aurora);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-variant-numeric: tabular-nums;
         }
 
         .stat-label {
@@ -648,6 +773,13 @@
 
         .social-btn:hover i {
             text-shadow: 0 0 10px var(--accent-cyan-glow);
+            animation: iconWiggle 0.5s ease;
+        }
+
+        @keyframes iconWiggle {
+            0%, 100% { transform: rotate(0deg); }
+            30% { transform: rotate(-12deg) scale(1.12); }
+            65% { transform: rotate(9deg); }
         }
 
         .about-skills h3 {
@@ -691,6 +823,7 @@
             background: rgba(0, 240, 255, 0.15);
             border-color: var(--accent-cyan);
             box-shadow: 0 0 10px var(--accent-cyan-glow);
+            transform: translateY(-2px);
         }
 
         /* ==========================================================================
@@ -727,7 +860,12 @@
         }
 
         .view-btn.active {
-            box-shadow: inset 0 0 5px rgba(255,255,255,0.1);
+            background: linear-gradient(135deg, rgba(0, 240, 255, 0.14), rgba(139, 92, 246, 0.16));
+            box-shadow: inset 0 0 0 1px rgba(0, 240, 255, 0.22), 0 0 14px rgba(0, 240, 255, 0.08);
+        }
+
+        .view-btn.active i {
+            color: var(--accent-cyan);
         }
 
         .search-filter-wrap {
@@ -757,14 +895,47 @@
             color: #ffffff;
         }
 
-        /* Canvas view container */
+        /* Canvas view container — layered nebula backdrop. The galaxy's
+           WebGL canvas is alpha:true, so these gradients read through it:
+           a violet cloud upper-left, a deep cyan pool lower-right, and a
+           faint magenta wisp up top, all over a blue-black base. */
         #galaxy-view-container {
             width: 100%;
             position: relative;
             border-radius: 16px;
             overflow: hidden;
             border: 1px solid var(--glass-border);
-            background: radial-gradient(circle at center, #07070b 0%, #030304 100%);
+            background:
+                radial-gradient(ellipse 60% 50% at 15% 18%, rgba(110, 60, 220, 0.16), transparent 68%),
+                radial-gradient(ellipse 55% 45% at 85% 80%, rgba(0, 170, 235, 0.13), transparent 68%),
+                radial-gradient(ellipse 40% 32% at 68% 8%, rgba(255, 0, 127, 0.07), transparent 62%),
+                radial-gradient(ellipse 45% 40% at 40% 95%, rgba(0, 240, 255, 0.05), transparent 60%),
+                radial-gradient(circle at center, #0a0b16 0%, #05050a 100%);
+        }
+
+        /* Pin-prick star field over the nebula (kept behind the canvas by
+           tree order — the pseudo is generated before the child elements).
+           Two staggered tiles + a slow twinkle so it feels alive without
+           competing with the WebGL particles. */
+        #galaxy-view-container::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                radial-gradient(1px 1px at 25px 35px, rgba(255, 255, 255, 0.8), transparent 100%),
+                radial-gradient(1px 1px at 125px 90px, rgba(180, 230, 255, 0.6), transparent 100%),
+                radial-gradient(1.5px 1.5px at 75px 150px, rgba(255, 255, 255, 0.5), transparent 100%),
+                radial-gradient(1px 1px at 180px 45px, rgba(220, 190, 255, 0.55), transparent 100%),
+                radial-gradient(1px 1px at 40px 190px, rgba(255, 255, 255, 0.4), transparent 100%),
+                radial-gradient(1.5px 1.5px at 210px 160px, rgba(160, 240, 255, 0.45), transparent 100%);
+            background-size: 240px 220px;
+            animation: starTwinkle 7s ease-in-out infinite alternate;
+        }
+
+        @keyframes starTwinkle {
+            from { opacity: 0.45; }
+            to { opacity: 1; }
         }
 
         .galaxy-instructions {
@@ -773,12 +944,16 @@
             left: 20px;
             z-index: 10;
             pointer-events: none;
-            background: rgba(3, 3, 4, 0.8);
-            border: 1px solid var(--glass-border);
+            background: rgba(5, 6, 12, 0.72);
+            border: 1px solid rgba(0, 240, 255, 0.14);
+            border-left: 2px solid var(--accent-cyan);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
             padding: 10px 15px;
-            border-radius: 8px;
+            border-radius: 10px;
             font-size: 0.85rem;
-            color: rgba(255, 255, 255, 0.7);
+            color: rgba(235, 240, 250, 0.72);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.35);
         }
 
         .galaxy-instructions strong {
@@ -811,6 +986,49 @@
             min-height: 250px;        /* grow with content — text is never clipped */
             transition: all var(--transition-smooth);
             min-width: 0;             /* allow flex children to shrink without forcing layout */
+            position: relative;
+            overflow: hidden;
+            /* Per-theme accents (overridden by each .theme-* class) */
+            --theme-color: var(--accent-cyan);
+            --theme-soft: rgba(0, 240, 255, 0.10);
+        }
+
+        /* Category-colored hairline along the top edge */
+        .project-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--theme-color), transparent 75%);
+            opacity: 0.35;
+            transition: opacity var(--transition-smooth);
+            pointer-events: none;
+        }
+
+        /* Soft category-tinted glow blooming from the top-right corner */
+        .project-card::after {
+            content: '';
+            position: absolute;
+            top: -50px;
+            right: -50px;
+            width: 160px;
+            height: 160px;
+            border-radius: 50%;
+            background: radial-gradient(circle, var(--theme-soft), transparent 70%);
+            opacity: 0.5;
+            transition: opacity var(--transition-smooth), transform var(--transition-slow);
+            pointer-events: none;
+        }
+
+        .project-card:hover::before {
+            opacity: 1;
+        }
+
+        .project-card:hover::after {
+            opacity: 1;
+            transform: scale(1.35);
         }
 
         .card-top {
@@ -894,7 +1112,7 @@
         }
 
         .meta-left i {
-            color: var(--accent-cyan);
+            color: var(--theme-color, var(--accent-cyan));
         }
 
         .meta-right {
@@ -907,28 +1125,49 @@
             color: #ffcc00;
         }
 
-        /* Color theme class overrides based on category */
-        .theme-nlp { --glass-border-glow: rgba(255, 0, 127, 0.25); }
+        /* Color theme class overrides based on category. Each theme sets
+           --theme-color / --theme-soft, which drive the top hairline,
+           corner glow, category icon, and hover styling. */
+        .theme-nlp {
+            --glass-border-glow: rgba(255, 0, 127, 0.25);
+            --theme-color: hsl(330, 100%, 60%);
+            --theme-soft: rgba(255, 0, 127, 0.10);
+        }
         .theme-nlp:hover { box-shadow: 0 10px 25px rgba(255, 0, 127, 0.08); }
         .theme-nlp:hover h3 { color: var(--accent-pink); }
 
-        .theme-vision { --glass-border-glow: rgba(0, 240, 255, 0.25); }
+        .theme-vision {
+            --glass-border-glow: rgba(0, 240, 255, 0.25);
+            --theme-color: var(--accent-cyan);
+            --theme-soft: rgba(0, 240, 255, 0.10);
+        }
         .theme-vision:hover { box-shadow: 0 10px 25px rgba(0, 240, 255, 0.08); }
         .theme-vision:hover h3 { color: var(--accent-cyan); }
 
-        .theme-systems { --glass-border-glow: rgba(57, 255, 20, 0.25); }
+        .theme-systems {
+            --glass-border-glow: rgba(57, 255, 20, 0.25);
+            --theme-color: hsl(110, 100%, 54%);
+            --theme-soft: rgba(57, 255, 20, 0.08);
+        }
         .theme-systems:hover { box-shadow: 0 10px 25px rgba(57, 255, 20, 0.08); }
         .theme-systems:hover h3 { color: var(--accent-green); }
 
-        .theme-games { --glass-border-glow: rgba(255, 170, 0, 0.25); }
+        .theme-games {
+            --glass-border-glow: rgba(255, 170, 0, 0.25);
+            --theme-color: var(--accent-gold);
+            --theme-soft: rgba(255, 170, 0, 0.10);
+        }
         .theme-games:hover { box-shadow: 0 10px 25px rgba(255, 170, 0, 0.08); }
         .theme-games:hover h3 { color: var(--accent-gold); }
 
         /* Experience cards (mixed into the grid alongside projects). */
-        .theme-experience { --glass-border-glow: rgba(139, 92, 246, 0.30); }
+        .theme-experience {
+            --glass-border-glow: rgba(139, 92, 246, 0.30);
+            --theme-color: hsl(258, 90%, 70%);
+            --theme-soft: rgba(139, 92, 246, 0.12);
+        }
         .theme-experience:hover { box-shadow: 0 10px 25px rgba(139, 92, 246, 0.10); }
         .theme-experience:hover h3 { color: hsl(258, 90%, 75%); }
-        .theme-experience .meta-left i { color: hsl(258, 90%, 70%); }
         .tech-tag-company {
             background: rgba(139, 92, 246, 0.10) !important;
             color: hsl(258, 90%, 80%) !important;
@@ -1502,6 +1741,24 @@
             box-shadow: 0 0 10px var(--accent-cyan);
         }
 
+        /* Soft radar ping emanating from each milestone */
+        .timeline-dot::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 1px solid var(--accent-cyan);
+            animation: dotPing 3.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+        }
+
+        .timeline-item:nth-child(2n) .timeline-dot::after { animation-delay: 1.1s; }
+        .timeline-item:nth-child(3n) .timeline-dot::after { animation-delay: 2.2s; }
+
+        @keyframes dotPing {
+            0% { transform: scale(1); opacity: 0.9; }
+            70%, 100% { transform: scale(2.6); opacity: 0; }
+        }
+
         .timeline-content {
             background: rgba(255, 255, 255, 0.015);
             border: 1px solid var(--glass-border);
@@ -1581,6 +1838,29 @@
             padding: 20px;
             position: relative;
             overflow: hidden;
+            transition: transform var(--transition-smooth), border-color var(--transition-fast);
+        }
+
+        /* Aurora hairline that fades in along the top edge on hover */
+        .edu-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--gradient-aurora);
+            opacity: 0;
+            transition: opacity var(--transition-smooth);
+        }
+
+        .edu-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .edu-card:hover::before {
+            opacity: 1;
         }
 
         .edu-date {
@@ -1920,6 +2200,108 @@
         }
 
         /* ==========================================================================
+           SCROLL PROGRESS ROCKET, REVEALS & MICRO-INTERACTION LAYER
+           ========================================================================== */
+        /* Thin aurora progress bar with a tiny rocket riding its tip —
+           the site's one deliberately "cute" flourish. Purely decorative:
+           pointer-events off, hidden from screen readers, disabled under
+           prefers-reduced-motion. */
+        #scroll-progress {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            z-index: 101;               /* above navbar (100), below modal */
+            pointer-events: none;
+        }
+
+        #scroll-progress .sp-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--gradient-aurora);
+            border-radius: 0 3px 3px 0;
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.55);
+        }
+
+        #scroll-progress .sp-rocket {
+            position: absolute;
+            top: -6px;
+            left: 0;
+            font-size: 15px;
+            line-height: 1;
+            /* Emoji art points up-right at 45°; rotate to fly along the bar */
+            transform: translateX(-55%) rotate(45deg);
+            filter: drop-shadow(0 0 6px rgba(0, 240, 255, 0.5));
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            animation: rocketHover 1.6s ease-in-out infinite;
+        }
+
+        #scroll-progress.scrolled .sp-rocket {
+            opacity: 1;
+        }
+
+        @keyframes rocketHover {
+            0%, 100% { margin-top: 0; }
+            50% { margin-top: 2.5px; }
+        }
+
+        /* Reveal-on-scroll: the .reveal class is only ever added by JS
+           (and only when IntersectionObserver exists and the user hasn't
+           asked for reduced motion), so content is always visible without
+           JS. --reveal-delay staggers siblings within a group. */
+        .reveal {
+            opacity: 0;
+            transform: translateY(24px);
+            transition:
+                opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--reveal-delay, 0s),
+                transform 0.7s cubic-bezier(0.16, 1, 0.3, 1) var(--reveal-delay, 0s);
+            will-change: opacity, transform;
+        }
+
+        .reveal.in-view {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Grid cards animate in with a soft stagger whenever the grid is
+           (re)rendered or the view unhides — animation-fill: backwards so
+           the hover transform still wins after the entrance completes. */
+        @keyframes cardIn {
+            from { opacity: 0; transform: translateY(18px) scale(0.985); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .projects-grid .project-card {
+            animation: cardIn 0.55s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+            animation-delay: calc(var(--i, 0) * 50ms);
+        }
+
+        /* Polished selection & keyboard focus */
+        ::selection {
+            background: rgba(0, 240, 255, 0.28);
+            color: #ffffff;
+        }
+
+        :focus-visible {
+            outline: 2px solid var(--accent-cyan);
+            outline-offset: 3px;
+            border-radius: 4px;
+        }
+
+        /* Calm-interface guarantee: honor reduced-motion everywhere */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+                scroll-behavior: auto !important;
+            }
+            #scroll-progress .sp-rocket { display: none; }
+        }
+
+        /* ==========================================================================
            MEDIA QUERIES (PC AND PHONE SCREEN SIZE TRANSITIONS)
            ========================================================================== */
         @media screen and (max-width: 1024px) {
@@ -1984,9 +2366,20 @@
             .education-grid {
                 grid-template-columns: 1fr;
             }
+            /* Keep the three stats side-by-side on phones — the cards are
+               small, and a single tall column reads as three lonely rows. */
             .stats-grid {
-                grid-template-columns: 1fr;
-                gap: 15px;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 10px;
+            }
+            .stat-card {
+                padding: 12px 6px;
+            }
+            .stat-num {
+                font-size: 1.5rem;
+            }
+            .stat-label {
+                font-size: 0.68rem;
             }
             
             /* Filter bar */
@@ -2027,6 +2420,11 @@
          the dominant per-frame compositor cost.) -->
     <!-- Background Canvas Container for particle background -->
     <div id="particles-bg"></div>
+    <!-- Scroll progress bar + rocket (decorative) -->
+    <div id="scroll-progress" aria-hidden="true">
+        <div class="sp-bar"></div>
+        <span class="sp-rocket">&#128640;</span>
+    </div>
     <!-- Fullscreen Native 3D Cosmos & Particle Galaxy Background -->
     <div id="splat-canvas-container"></div>
     <div class="splat-loading-widget" id="splat-loading-widget">
@@ -2332,6 +2730,99 @@
             <!-- Modal details dynamically loaded here -->
         </div>
     </div>
+
+    <!-- Micro-interaction layer: scroll-progress rocket, reveal-on-scroll,
+         and stat count-ups. Self-contained and purely progressive — without
+         JS (or with reduced motion) every element stays fully visible. -->
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+            // ── Scroll progress bar + rocket ──────────────────────────────
+            const progressWrap = document.getElementById("scroll-progress");
+            const progressBar = progressWrap ? progressWrap.querySelector(".sp-bar") : null;
+            const progressRocket = progressWrap ? progressWrap.querySelector(".sp-rocket") : null;
+            if (progressBar && progressRocket) {
+                let ticking = false;
+                const paint = () => {
+                    ticking = false;
+                    const max = document.documentElement.scrollHeight - window.innerHeight;
+                    const p = max > 0 ? Math.min(1, window.scrollY / max) : 0;
+                    progressBar.style.width = (p * 100) + "%";
+                    progressRocket.style.left = (p * 100) + "%";
+                    progressWrap.classList.toggle("scrolled", p > 0.005);
+                };
+                window.addEventListener("scroll", () => {
+                    if (!ticking) { ticking = true; requestAnimationFrame(paint); }
+                }, { passive: true });
+                paint();
+            }
+
+            // ── Reveal-on-scroll (static content only; dynamic grid cards
+            //    use the CSS cardIn entrance instead) ─────────────────────
+            if ("IntersectionObserver" in window && !reducedMotion) {
+                const singles = document.querySelectorAll(
+                    ".section-header, .about-text > p, .social-links, .about-skills .skill-group, " +
+                    ".projects-bar, #galaxy-view-container, .chat-intro-card, .chat-interface-card, " +
+                    ".timeline-container, .education-header"
+                );
+                const staggered = [
+                    document.querySelectorAll(".stats-grid .stat-card"),
+                    document.querySelectorAll(".education-grid .edu-card")
+                ];
+
+                const observer = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (!entry.isIntersecting) return;
+                        entry.target.classList.add("in-view");
+                        observer.unobserve(entry.target);
+                        // Release the GPU layer once the entrance settles.
+                        setTimeout(() => { entry.target.style.willChange = "auto"; }, 1200);
+                    });
+                }, { threshold: 0.08, rootMargin: "0px 0px -7% 0px" });
+
+                singles.forEach(el => {
+                    el.classList.add("reveal");
+                    observer.observe(el);
+                });
+                staggered.forEach(group => {
+                    group.forEach((el, i) => {
+                        el.classList.add("reveal");
+                        el.style.setProperty("--reveal-delay", (i * 0.09) + "s");
+                        observer.observe(el);
+                    });
+                });
+            }
+
+            // ── Stat number count-up ──────────────────────────────────────
+            const stats = document.querySelectorAll(".stat-num");
+            if ("IntersectionObserver" in window && !reducedMotion && stats.length) {
+                const runCountUp = (el) => {
+                    const match = /^(\d+)(.*)$/.exec(el.textContent.trim());
+                    if (!match) return;
+                    const target = parseInt(match[1], 10);
+                    const suffix = match[2] || "";
+                    const t0 = performance.now();
+                    const dur = 1100;
+                    const step = (now) => {
+                        const t = Math.min(1, (now - t0) / dur);
+                        const eased = 1 - Math.pow(1 - t, 3);
+                        el.textContent = Math.round(target * eased) + suffix;
+                        if (t < 1) requestAnimationFrame(step);
+                    };
+                    requestAnimationFrame(step);
+                };
+                const statObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (!entry.isIntersecting) return;
+                        statObserver.unobserve(entry.target);
+                        runCountUp(entry.target);
+                    });
+                }, { threshold: 0.6 });
+                stats.forEach(el => statObserver.observe(el));
+            }
+        });
+    </script>
 
     <!-- External portfolio data scripts (CORS-safe for file:// local
          double-click). These are ~512 KB each (mostly the 27 × 768-dim
@@ -3527,9 +4018,12 @@
                     return;
                 }
                 
-                items.forEach(item => {
+                items.forEach((item, idx) => {
                     const isExperience = !!item.role;
                     const card = document.createElement("div");
+                    // Entrance stagger index for the cardIn animation,
+                    // capped so late cards don't wait forever.
+                    card.style.setProperty("--i", Math.min(idx, 11));
                     if (isExperience) {
                         card.className = `project-card experience-card glass theme-experience`;
                         card.addEventListener("click", () => this.openExperienceModal(item));

@@ -410,8 +410,8 @@ window.projectsData = [
     "results": "Built a complete self-tuning AI that sustains an average of 50,000 cleared lines without next-piece preview or hold, plus an inverse-heuristic adversarial piece generator for Hell Mode."
   },
   {
-    "title": "TensorFlow.js WASM Benchmarking (IMC '23)",
-    "description": "A cross-browser inference performance study of TensorFlow.js backends (WebGL, WASM, and CPU) using Selenium-automated timing. It is the machine-learning artifact behind an ACM Internet Measurement Conference 2023 paper on real-world WebAssembly performance, holding the benchmark harness, collected timing data, and analysis.",
+    "title": "TensorFlow.js WASM Benchmarking",
+    "description": "A cross-browser inference performance study of TensorFlow.js backends (WebGL, WASM, and CPU) using Selenium-automated timing. It holds the full benchmark harness, collected timing data, and analysis for a study of real-world WebAssembly machine-learning performance.",
     "category": "AI/ML & LLM",
     "technologies": [
       "TensorFlow.js",
@@ -425,6 +425,6 @@ window.projectsData = [
     "link": "https://github.com/woodyhoko/tfjs_wasm",
     "website": "https://woodyhoko.github.io/tfjs_wasm/",
     "challenges": "Automating reproducible warm-versus-cold timing across browsers and backends while isolating initialization overhead, memory-transfer cost, and silent GPU-API failures.",
-    "results": "Quantified 15-20x WASM speedups over plain-JS CPU inference and surfaced a V8 'first-argument advantage', contributing the ML portion of a published IMC '23 study."
+    "results": "Quantified 15-20x WASM speedups over plain-JS CPU inference and surfaced a V8 'first-argument advantage' across browsers and backends."
   }
 ];
