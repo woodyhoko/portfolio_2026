@@ -1,5 +1,61 @@
 window.projectsData = [
   {
+    "title": "Lumina: In-Browser Aesthetic Photo Curator",
+    "description": "A fully client-side photo-ranking app that scores images for aesthetic quality using a FGAesQ neural model (CLIP ViT-B/16 with DiffToken multi-scale tokenisation) exported to ONNX and run in the browser. It ranks a set of photos, surfaces the single best shot, and explains its verdict, with a classical five-signal engine (focus, composition, exposure, contrast, colour) as an explainable fallback.",
+    "category": "Computer Vision & 3D",
+    "technologies": [
+      "JavaScript",
+      "CLIP ViT-B/16",
+      "ONNX Runtime Web",
+      "WebGPU",
+      "Three.js"
+    ],
+    "date": "2026-07",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/lumina",
+    "app": "https://woodyhoko.github.io/lumina/",
+    "challenges": "Replicating the official PyTorch preprocessing pipeline deterministically in JavaScript — CLIP normalization, zero-padding, 16x16 patch tokenization, and bicubic interpolation of positional embeddings — to hold numerical parity with the Python reference.",
+    "results": "Achieved verified parity of within 0.011 on the 1-10 aesthetic scale against the Python reference, with roughly 60 ms per-image inference on WebGPU and no image ever leaving the device."
+  },
+  {
+    "title": "Morsel: On-Device Food Journal on a 3D Globe",
+    "description": "A privacy-first food-tracking app that reads photos straight from your device, recognises the meal with an in-browser CLIP model, pulls location and time from EXIF metadata, estimates nutrition, and plots your culinary history on an interactive 3D globe. Nothing is ever uploaded — all inference and storage stay local.",
+    "category": "Computer Vision & 3D",
+    "technologies": [
+      "JavaScript",
+      "Transformers.js",
+      "globe.gl",
+      "Three.js",
+      "Chart.js",
+      "Leaflet",
+      "exifr"
+    ],
+    "date": "2026-07",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/morsel",
+    "app": "https://woodyhoko.github.io/morsel/",
+    "challenges": "Running a full CLIP computer-vision pipeline entirely in the browser from a static file:// context with no build step or backend, while staying compatible across browser engines and degrading gracefully when WebGPU is unavailable.",
+    "results": "Shipped a zero-build vanilla-JS app that launches from a double-click, delivers GPU-accelerated photo analysis, persists everything in IndexedDB via the File System Access API, and gives users complete ownership of their data."
+  },
+  {
+    "title": "Dreamfinder: Career Discovery Through Play",
+    "description": "An interactive career-discovery tool that maps a user's passions, strengths, and values through ten distinct mini-games — swiping, bubble-popping, forced choices, sliders — measuring interests across 12 domains while cross-validating answers for consistency. It returns a ranked shortlist of 48 career paths with concrete first steps, drawing on Holland (RIASEC) codes, flow theory, Big Five, and values clarification.",
+    "category": "Tools & Simulation",
+    "technologies": [
+      "HTML5",
+      "CSS3",
+      "Vanilla JS",
+      "Psychometrics",
+      "Data Visualization"
+    ],
+    "date": "2026-07",
+    "stars": "0",
+    "link": "https://github.com/woodyhoko/dreamfinder",
+    "app": "https://woodyhoko.github.io/dreamfinder/",
+    "challenges": "Signal validation — telling genuine engagement from careless play (straight-lining, speedrunning, untouched fields) by having six games measure the same domains different ways and correlating their answers into a single consistency score.",
+    "results": "Built a private, in-browser tool where random clicking scores about 3/100 for consistency while coherent sessions score 90+, producing personality archetypes, an estimated MBTI, passion/aptitude radar charts, and an ikigai alignment, all exportable as PDF."
+  },
+  {
     "title": "Re-Tired: Retirement, Tax & Market Simulator",
     "description": "A comprehensive financial planning simulator calculating the expected future net worth of a user by factoring in progressive tax brackets, investment interests, inflation, and customized yearly spending trajectories.",
     "category": "Tools & Simulation",
